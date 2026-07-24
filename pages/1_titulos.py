@@ -32,7 +32,7 @@ if drive_service and sheets_client:
                             'name': uploaded_file.name,
                             'parents': [CARPETA_DRIVE_ID]
                         }
-                        media = MediaIoBaseUpload(io.BytesIO(uploaded_file.getvalue()), mimetype='application/pdf')
+                        # Agregamos chunksize (fragmentos de 1MB) y resumable=True para evitar cortes de conexión                         media = MediaIoBaseUpload(                             io.BytesIO(uploaded_file.getvalue()),                              mimetype='application/pdf',                             chunksize=1024*1024,                              resumable=True                         )
                         drive_service.files().create(
                             body=file_metadata, 
                             media_body=media, 
