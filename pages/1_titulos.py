@@ -37,6 +37,7 @@ if drive_service and sheets_client:
                             body=file_metadata, 
                             media_body=media, 
                             fields='id'
+                            supportsAllDrives=True
                         ).execute()
                         
                         st.success(f"✅ Archivo '{uploaded_file.name}' guardado correctamente en Drive.")
