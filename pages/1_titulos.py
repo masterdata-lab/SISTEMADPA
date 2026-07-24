@@ -8,19 +8,11 @@ from conexion import conectar_google
 st.set_page_config(page_title="Títulos de Propiedad", page_icon="📄", layout="wide")
 
 # --- INICIALIZAR VARIABLES DE ESTADO ---
-# Esto nos permite reiniciar el uploader y mostrar la notificación al finalizar
 if "uploader_key" not in st.session_state:
     st.session_state.uploader_key = 0
-if "mostrar_toast" not in st.session_state:
-    st.session_state.mostrar_toast = False
+if "carga_exitosa" not in st.session_state:
+    st.session_state.carga_exitosa = False
 if "cantidad_subida" not in st.session_state:
-    st.session_state.cantidad_subida = 0
-
-# Disparar el mensaje "pushup" (toast) si acabamos de terminar una carga
-if st.session_state.mostrar_toast:
-    st.toast(f"✅ ¡{st.session_state.cantidad_subida} archivos guardados con éxito!", icon="🎉")
-    # Reseteamos las variables para que no se muestre de nuevo al cambiar de pestaña
-    st.session_state.mostrar_toast = False
     st.session_state.cantidad_subida = 0
 
 # --- CONSTANTES ---
@@ -39,7 +31,15 @@ if drive_service and sheets_client:
     with tab_carga:
         st.header("Carga Masiva de Documentos")
         
-        # El uploader ahora usa una 'key' dinámica. Al cambiar la key, se limpia la caja automáticamente.
+        # Si venimos de una carga exitosa, mostramos los mensajes aquí mismo
+        if st.session_state.carga_exitosa:
+            mensaje = f"¡{st.session_state.cantidad_subida} archivos guardados con éxito en Google Drive!"
+            st.success(f"✅ {mensaje}")
+            st.toast(f"✅ {mensaje}", icon="🎉")
+            # Apagamos el aviso para que desaparezca cuando el usuario haga otra acción
+            st.session_state.carga_exitosa = False 
+        
+        # El uploader ahora usa una 'key' dinámica.
         uploaded_files = st.file_uploader(
             "Selecciona los archivos PDF (puedes elegir varios)", 
             type=["pdf"], 
@@ -47,23 +47,19 @@ if drive_service and sheets_client:
             key=f"uploader_{st.session_state.uploader_key}"
         )
         
-        # Creamos contenedores vacíos para inyectar elementos visuales que luego podamos borrar
+        # Contenedores para la interfaz de progreso
         contenedor_info = st.empty()
         contenedor_progreso = st.empty()
         contenedor_texto_estado = st.empty()
         
         if uploaded_files:
-            # Mostramos la cantidad seleccionada
             contenedor_info.info(f"Has seleccionado {len(uploaded_files)} archivo(s).")
             
             if st.button("Guardar en Google Drive"):
                 total_archivos = len(uploaded_files)
-                
-                # Inicializamos la barra de progreso en 0
                 barra = contenedor_progreso.progress(0)
                 
                 for i, uploaded_file in enumerate(uploaded_files):
-                    # Actualizamos el texto en pantalla (un solo renglón que va cambiando)
                     contenedor_texto_estado.write(f"🔄 Procesando {i+1} de {total_archivos}: `{uploaded_file.name}`...")
                     
                     file_bytes = uploaded_file.getvalue()
@@ -98,21 +94,15 @@ if drive_service and sheets_client:
                     except Exception as e:
                         st.error(f"Error al subir '{uploaded_file.name}': {e}")
                     
-                    # Avanzamos la barra de progreso
                     barra.progress((i + 1) / total_archivos)
                 
                 # --- AL FINALIZAR EL BUCLE ---
-                # Borramos la info de la pantalla
-                contenedor_info.empty()
-                contenedor_progreso.empty()
-                contenedor_texto_estado.empty()
-                
-                # Preparamos las variables para el "toast" y cambiamos la key del uploader
-                st.session_state.mostrar_toast = True
+                # Preparamos las variables de éxito y reiniciamos el uploader
+                st.session_state.carga_exitosa = True
                 st.session_state.cantidad_subida = total_archivos
                 st.session_state.uploader_key += 1
                 
-                # Forzamos una recarga silenciosa de la página para aplicar el borrado
+                # Recargamos la página
                 st.rerun()
                 
     with tab_procesar:
@@ -141,3 +131,4 @@ if drive_service and sheets_client:
                         st.error(f"Error al guardar en Sheets: {e}")
 else:
     st.error("No se pudo conectar a Google. Revisa las credenciales en Streamlit.")
+    
