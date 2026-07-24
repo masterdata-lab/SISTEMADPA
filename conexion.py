@@ -1,21 +1,19 @@
 import streamlit as st
 import json
-from google.oauth2 import service_account
+from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 import gspread
 
 @st.cache_resource
 def conectar_google():
     try:
-        # Cargar las credenciales desde los secretos de Streamlit
-        creds_json = json.loads(st.secrets["google_credentials_json"])
-        scopes = [
-            "https://www.googleapis.com/auth/drive",
-            "https://www.googleapis.com/auth/spreadsheets"
-        ]
-        creds = service_account.Credentials.from_service_account_info(creds_json, scopes=scopes)
+        # Cargar el nuevo token de usuario desde los secretos de Streamlit
+        token_json = json.loads(st.secrets["google_token_json"])
         
-        # Conectar a Drive y a Sheets
+        # Crear credenciales usando el Refresh Token (para que no caduque)
+        creds = Credentials.from_authorized_user_info(token_json)
+        
+        # Conectar a Drive y a Sheets en tu nombre
         drive_service = build('drive', 'v3', credentials=creds)
         sheets_client = gspread.authorize(creds)
         
