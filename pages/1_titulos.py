@@ -36,7 +36,7 @@ if drive_service and sheets_client:
                         drive_service.files().create(
                             body=file_metadata, 
                             media_body=media, 
-                            fields='id'
+                            fields='id',
                             supportsAllDrives=True
                         ).execute()
                         
