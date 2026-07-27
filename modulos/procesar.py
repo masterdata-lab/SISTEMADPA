@@ -7,13 +7,17 @@ from google.genai import types
 
 def procesar_con_ia(pdf_bytes):
     """
-    Se conecta a la API de Gemini usando los modelos indicados y extrae 
-    los datos estructurados usando el esquema JSON requerido.
+    Se conecta a la API de Gemini usando los modelos configurados en secrets
+    y extrae los datos estructurados usando el esquema JSON requerido.
     """
-    # Inicializar cliente con el secreto de Streamlit
     try:
         api_key = st.secrets["GEMINI_API_KEY"]
         client = genai.Client(api_key=api_key)
+        
+        # Obtenemos los modelos desde los secretos (con valores de respaldo)
+        modelo_principal = st.secrets.get("MODELO_IA_PRINCIPAL", "3.1-Flash-Lite")
+        modelo_secundario = st.secrets.get("MODELO_IA_SECUNDARIO", "3.5-Flash")
+        
     except KeyError:
         raise Exception("Falta la variable GEMINI_API_KEY en los secretos de Streamlit.")
 
@@ -27,10 +31,8 @@ def procesar_con_ia(pdf_bytes):
     4. El 'Titular' suele encontrarse bajo 'Razón Social' o 'Titular'.
     5. Fechas en formato DD/MM/YYYY. Textos en MAYÚSCULAS."""
 
-    # Preparamos el documento en memoria para enviarlo a la API
     documento_pdf = types.Part.from_bytes(data=pdf_bytes, mime_type='application/pdf')
 
-    # Definimos la estructura exacta que queremos que la IA devuelva
     esquema_json = {
         "type": "OBJECT",
         "properties": {
@@ -52,43 +54,41 @@ def procesar_con_ia(pdf_bytes):
     configuracion_ia = types.GenerateContentConfig(
         response_mime_type="application/json",
         response_schema=esquema_json,
-        temperature=0.0 # Temperatura en 0 para respuestas exactas y deterministas
+        temperature=0.0 
     )
 
     try:
-        # INTENTO 1: Modelo Principal (3.1-Flash-Lite)
+        # INTENTO 1: Modelo Principal (Desde Secrets)
         respuesta = client.models.generate_content(
-            model="3.1-Flash-Lite",
+            model=modelo_principal,
             contents=[prompt, documento_pdf],
             config=configuracion_ia
         )
         return json.loads(respuesta.text)
     
     except Exception as error_principal:
-        st.warning(f"⚠️ Falló 3.1-Flash-Lite, intentando failover a 3.5-Flash... (Error: {error_principal})")
+        st.warning(f"⚠️ Falló {modelo_principal}, intentando failover a {modelo_secundario}... (Error: {error_principal})")
         try:
-            # INTENTO 2: Failover (3.5-Flash)
+            # INTENTO 2: Failover (Desde Secrets)
             respuesta_failover = client.models.generate_content(
-                model="3.5-Flash",
+                model=modelo_secundario,
                 contents=[prompt, documento_pdf],
                 config=configuracion_ia
             )
             return json.loads(respuesta_failover.text)
         except Exception as error_failover:
-            raise Exception(f"Ambos modelos fallaron. Detalles: {error_failover}")
+            raise Exception(f"Ambos modelos ({modelo_principal} y {modelo_secundario}) fallaron. Detalles: {error_failover}")
 
 def mover_archivo_drive(drive_service, file_id, id_origen, id_destino, datos_extraidos):
     """
     Mueve el archivo entre carpetas y guarda los datos de la IA
     como propiedades individuales para respetar los límites de la API de Drive.
     """
-    # Preparamos las propiedades validando el límite de 124 bytes (aprox. caracteres)
     propiedades_app = {}
     
     for clave, valor in datos_extraidos.items():
         if valor is not None:
             valor_str = str(valor)
-            # Recortamos a 100 caracteres para asegurar que no rompa el límite de Google Drive
             if len(valor_str) > 100:
                 valor_str = valor_str[:100]
             propiedades_app[clave] = valor_str
@@ -113,7 +113,6 @@ def modulo_procesar(drive_service, TIPO_DOC):
 
     st.info(f"Buscando archivos en la bandeja '1_Pendientes'...")
     
-    # Listar archivos en la carpeta de Pendientes
     query = f"'{id_origen}' in parents and trashed=false"
     resultados = drive_service.files().list(q=query, fields="files(id, name)").execute()
     archivos = resultados.get('files', [])
@@ -132,7 +131,6 @@ def modulo_procesar(drive_service, TIPO_DOC):
             estado_texto.write(f"Procesando con IA: `{archivo['name']}`...")
             
             try:
-                # 1. Descargar el archivo desde Google Drive a la memoria
                 request = drive_service.files().get_media(fileId=archivo['id'])
                 fh = io.BytesIO()
                 downloader = MediaIoBaseDownload(fh, request)
@@ -141,11 +139,7 @@ def modulo_procesar(drive_service, TIPO_DOC):
                     status, done = downloader.next_chunk()
                 
                 pdf_bytes = fh.getvalue()
-                
-                # 2. Enviar los bytes a Gemini (Intento 1 y Failover)
                 datos_json = procesar_con_ia(pdf_bytes)
-                
-                # 3. Mover a la bandeja "2_Para_Auditar" e inyectar los metadatos
                 mover_archivo_drive(drive_service, archivo['id'], id_origen, id_destino, datos_json)
                 
             except Exception as e:
