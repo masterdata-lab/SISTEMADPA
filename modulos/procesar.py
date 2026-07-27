@@ -8,18 +8,15 @@ from google.genai import types
 def procesar_con_ia_y_reintentos(pdf_bytes, status_text_ui, nombre_archivo):
     """
     Se conecta a la API de Gemini con reintentos y actualiza la UI en vivo.
-    Fuerza el prefijo 'models/' para evitar el error de formato de nombre.
+    Utiliza los nombres exactos de los modelos configurados en los secretos.
     """
     try:
         api_key = st.secrets["GEMINI_API_KEY"]
         client = genai.Client(api_key=api_key)
         
-        # Obtenemos los nombres y aplicamos el formato requerido
-        nombre_principal = st.secrets.get("MODELO_IA_PRINCIPAL", "3.1-Flash-Lite")
-        nombre_secundario = st.secrets.get("MODELO_IA_SECUNDARIO", "3.5-Flash")
-        
-        modelo_principal = f"models/{nombre_principal}" if not nombre_principal.startswith("models/") else nombre_principal
-        modelo_secundario = f"models/{nombre_secundario}" if not nombre_secundario.startswith("models/") else nombre_secundario
+        # Leemos los IDs exactos de los modelos desde los secretos
+        modelo_principal = st.secrets.get("MODELO_IA_PRINCIPAL", "gemini-3.1-flash-lite")
+        modelo_secundario = st.secrets.get("MODELO_IA_SECUNDARIO", "gemini-3.5-flash")
         
     except KeyError:
         raise Exception("Falta la variable GEMINI_API_KEY en los secretos de Streamlit.")
@@ -81,13 +78,13 @@ def procesar_con_ia_y_reintentos(pdf_bytes, status_text_ui, nombre_archivo):
             )
             return json.loads(respuesta_failover.text)
         except Exception as error_failover:
-            # Implementación de tu excepción personalizada
             raise Exception(f"TIMEOUT_GLOBAL: Ambos modelos se encuentran saturados o devolvieron error. Intente más tarde. Detalles: {error_failover}")
 
 
 def mover_archivo_drive(drive_service, file_id, id_origen, id_destino, datos_extraidos):
     """
     Mueve el archivo entre carpetas y guarda los datos de la IA como propiedades individuales.
+    Se agrega num_retries=3 para evitar cortes de conexión SSL.
     """
     propiedades_app = {}
     for clave, valor in datos_extraidos.items():
@@ -103,11 +100,10 @@ def mover_archivo_drive(drive_service, file_id, id_origen, id_destino, datos_ext
         removeParents=id_origen,
         body={"appProperties": propiedades_app},
         fields='id, parents'
-    ).execute()
+    ).execute(num_retries=3)
 
 
 def modulo_procesar(drive_service, TIPO_DOC):
-    # Implementación de tus cabeceras personalizadas
     st.markdown(f"## ⚙️ Motor de Procesamiento (IA) - {TIPO_DOC}")
     st.divider()
     
@@ -121,7 +117,9 @@ def modulo_procesar(drive_service, TIPO_DOC):
     st.info("Buscando archivos en la bandeja '1_Pendientes'...")
     
     query = f"'{id_origen}' in parents and trashed=false"
-    resultados = drive_service.files().list(q=query, fields="files(id, name)").execute()
+    
+    # Tolerancia a fallos de red al listar archivos
+    resultados = drive_service.files().list(q=query, fields="files(id, name)").execute(num_retries=3)
     archivos = resultados.get('files', [])
     
     if not archivos:
@@ -153,8 +151,6 @@ def modulo_procesar(drive_service, TIPO_DOC):
     # --- LÓGICA DE PROCESAMIENTO ---
     if st.session_state.procesando_ia:
         barra_progreso = st.progress(0)
-        
-        # Este es el contenedor UI que le pasaremos a la función para que escriba en vivo
         status_text_ui = st.empty()
         
         archivos_exitosos = 0
@@ -167,7 +163,6 @@ def modulo_procesar(drive_service, TIPO_DOC):
                 break
             
             try:
-                # Descarga del archivo
                 request = drive_service.files().get_media(fileId=archivo['id'])
                 fh = io.BytesIO()
                 downloader = MediaIoBaseDownload(fh, request)
@@ -177,7 +172,7 @@ def modulo_procesar(drive_service, TIPO_DOC):
                 
                 pdf_bytes = fh.getvalue()
                 
-                # Pasamos status_text_ui al motor para que informe los pasos (Intento 1, Failover, etc.)
+                # Procesamiento con IA
                 datos_json = procesar_con_ia_y_reintentos(pdf_bytes, status_text_ui, archivo['name'])
                 
                 # Mover en Drive
@@ -195,7 +190,7 @@ def modulo_procesar(drive_service, TIPO_DOC):
         st.session_state.procesando_ia = False
         st.session_state.detener_proceso = False
         
-        status_text_ui.empty() # Limpiamos el texto de estado en vivo al terminar
+        status_text_ui.empty() 
         
         st.markdown("---")
         st.subheader("📊 Resumen del Procesamiento")
