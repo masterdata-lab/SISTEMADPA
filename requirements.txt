@@ -5,3 +5,4 @@ google-auth-oauthlib
 gspread
 Pillow
 google-genai>=0.3.0
+pypdf
