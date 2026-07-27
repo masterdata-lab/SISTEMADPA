@@ -1,9 +1,10 @@
 import streamlit as st
 import io
 import json
-from googleapiclient.http import MediaIoBaseDownload
+from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
 from google import genai
 from google.genai import types
+from pypdf import PdfReader, PdfWriter
 
 def procesar_con_ia_y_reintentos(pdf_bytes, status_text_ui, nombre_archivo):
     try:
@@ -88,8 +89,30 @@ def mover_archivo_drive(drive_service, file_id, id_origen, id_destino, datos_ext
         fields='id, parents'
     ).execute(num_retries=3)
 
+def crear_nuevo_archivo_drive(drive_service, nombre, id_destino, pdf_bytes, datos_extraidos):
+    """Crea un archivo nuevo directamente en la carpeta destino."""
+    propiedades_app = {}
+    for clave, valor in datos_extraidos.items():
+        if valor is not None:
+            valor_str = str(valor)
+            if len(valor_str) > 100:
+                valor_str = valor_str[:100]
+            propiedades_app[clave] = valor_str
+            
+    file_metadata = {
+        'name': nombre,
+        'parents': [id_destino],
+        'appProperties': propiedades_app
+    }
+    media = MediaIoBaseUpload(io.BytesIO(pdf_bytes), mimetype='application/pdf', resumable=True)
+    archivo_creado = drive_service.files().create(
+        body=file_metadata,
+        media_body=media,
+        fields='id'
+    ).execute(num_retries=3)
+    return archivo_creado['id']
+
 def revertir_archivo_drive(drive_service, file_id, id_actual, id_original):
-    """Mueve el archivo de regreso a la carpeta original en caso de cancelación."""
     drive_service.files().update(
         fileId=file_id,
         addParents=id_original,
@@ -101,7 +124,7 @@ def revertir_archivo_drive(drive_service, file_id, id_actual, id_original):
 def iniciar_proceso():
     st.session_state.procesando_ia = True
     st.session_state.detener_proceso = False
-    st.session_state.archivos_movidos_lote = []
+    st.session_state.acciones_rollback = []
 
 def cancelar_proceso():
     st.session_state.detener_proceso = True
@@ -119,38 +142,42 @@ def modulo_procesar(drive_service, TIPO_DOC):
         st.error("Error: No se encontraron los IDs de las carpetas. Ve a la pestaña 'Carga' primero.")
         return
 
-    # Inicialización de variables de estado
     if "procesando_ia" not in st.session_state:
         st.session_state.procesando_ia = False
     if "detener_proceso" not in st.session_state:
         st.session_state.detener_proceso = False
-    if "archivos_movidos_lote" not in st.session_state:
-        st.session_state.archivos_movidos_lote = []
+    if "acciones_rollback" not in st.session_state:
+        st.session_state.acciones_rollback = []
 
     # --- BLOQUE DE INTERCEPCIÓN Y ROLLBACK ---
     if st.session_state.detener_proceso:
         st.warning("⚠️ Procesamiento cancelado por el usuario. Ejecutando protocolo de seguridad (Rollback)...")
-        archivos_a_revertir = st.session_state.archivos_movidos_lote
+        acciones = st.session_state.acciones_rollback
         
-        if archivos_a_revertir:
+        if acciones:
             barra_rollback = st.progress(0)
-            for i, file_id in enumerate(archivos_a_revertir):
+            # Revertimos en orden inverso para asegurar la consistencia
+            for i, accion in enumerate(reversed(acciones)):
                 try:
-                    revertir_archivo_drive(drive_service, file_id, id_destino, id_origen)
+                    if accion["tipo"] == "move":
+                        revertir_archivo_drive(drive_service, accion["file_id"], accion["destino"], accion["origen"])
+                    elif accion["tipo"] == "create":
+                        drive_service.files().delete(fileId=accion["file_id"]).execute(num_retries=3)
+                    elif accion["tipo"] == "trash":
+                        drive_service.files().update(fileId=accion["file_id"], body={'trashed': False}).execute(num_retries=3)
                 except Exception:
-                    pass # Si ocurre un error al revertir uno, lo saltamos y continuamos con el resto
-                barra_rollback.progress((i + 1) / len(archivos_a_revertir))
-            st.success(f"✅ Rollback completado: {len(archivos_a_revertir)} documentos fueron devueltos a la bandeja inicial. No hay cambios.")
+                    pass
+                barra_rollback.progress((i + 1) / len(acciones))
+            st.success("✅ Rollback completado: El sistema volvió a su estado original.")
         else:
             st.info("No se había movido ningún documento. Nada que revertir.")
             
-        # Limpiamos el estado para el siguiente intento
         st.session_state.detener_proceso = False
-        st.session_state.archivos_movidos_lote = []
+        st.session_state.acciones_rollback = []
         
         if st.button("Aceptar y Volver", type="primary"):
             st.rerun()
-        return # Evitamos que siga corriendo la app hasta que presione Aceptar
+        return
 
     # --- FLUJO NORMAL DE LA INTERFAZ ---
     st.info("Buscando archivos en la bandeja '1_Pendientes'...")
@@ -168,7 +195,6 @@ def modulo_procesar(drive_service, TIPO_DOC):
         st.button("🚀 Iniciar Procesamiento", use_container_width=True, disabled=st.session_state.procesando_ia, on_click=iniciar_proceso)
     with col2:
         if st.session_state.procesando_ia:
-            # Ahora usamos un Callback seguro (on_click) en lugar de una redirección manual
             st.button("🛑 Detener Procesamiento", type="primary", use_container_width=True, on_click=cancelar_proceso)
 
     # --- LÓGICA DE PROCESAMIENTO ---
@@ -182,41 +208,89 @@ def modulo_procesar(drive_service, TIPO_DOC):
 
         for i, archivo in enumerate(archivos):
             try:
+                # 1. Descargar documento
                 request = drive_service.files().get_media(fileId=archivo['id'])
                 fh = io.BytesIO()
                 downloader = MediaIoBaseDownload(fh, request)
                 done = False
                 while done is False:
                     status, done = downloader.next_chunk()
+                
                 pdf_bytes = fh.getvalue()
-                
-                datos_json = procesar_con_ia_y_reintentos(pdf_bytes, status_text_ui, archivo['name'])
-                
-                # PRE-REGISTRO: Lo anotamos en la lista de Rollback ANTES de moverlo 
-                # por si se corta el internet justo en medio de la transacción.
-                st.session_state.archivos_movidos_lote.append(archivo['id'])
-                
-                mover_archivo_drive(drive_service, archivo['id'], id_origen, id_destino, datos_json)
-                archivos_exitosos += 1
-                
+                lector = PdfReader(io.BytesIO(pdf_bytes))
+                num_paginas = len(lector.pages)
+
+                if num_paginas == 1:
+                    # Flujo estándar: 1 archivo = 1 página
+                    datos_json = procesar_con_ia_y_reintentos(pdf_bytes, status_text_ui, archivo['name'])
+                    st.session_state.acciones_rollback.append({"tipo": "move", "file_id": archivo['id'], "origen": id_origen, "destino": id_destino})
+                    mover_archivo_drive(drive_service, archivo['id'], id_origen, id_destino, datos_json)
+                    archivos_exitosos += 1
+
+                else:
+                    # Flujo multipágina: Extraer y analizar solo la primera página
+                    status_text_ui.info(f"📄 `{archivo['name']}` tiene {num_paginas} páginas. Validando contenido...")
+                    
+                    escritor_p1 = PdfWriter()
+                    escritor_p1.add_page(lector.pages[0])
+                    bytes_p1 = io.BytesIO()
+                    escritor_p1.write(bytes_p1)
+                    pdf_p1 = bytes_p1.getvalue()
+                    
+                    datos_json_p1 = procesar_con_ia_y_reintentos(pdf_p1, status_text_ui, f"{archivo['name']} (Pág 1)")
+                    
+                    if not datos_json_p1.get("es_titulo_valido", False):
+                        # Era una póliza de 1000 páginas u otro documento inválido. Mover entero sin dividir.
+                        status_text_ui.warning(f"⚠️ `{archivo['name']}` no es un lote de Títulos. Moviendo completo sin dividir.")
+                        st.session_state.acciones_rollback.append({"tipo": "move", "file_id": archivo['id'], "origen": id_origen, "destino": id_destino})
+                        mover_archivo_drive(drive_service, archivo['id'], id_origen, id_destino, datos_json_p1)
+                        archivos_exitosos += 1
+                    else:
+                        # Es un lote de Títulos. Proceder a dividir.
+                        status_text_ui.success(f"✂️ Lote confirmado. Dividiendo `{archivo['name']}` en {num_paginas} archivos independientes...")
+                        
+                        for p in range(num_paginas):
+                            if st.session_state.detener_proceso:
+                                break # Respetar interrupción a la mitad del lote
+                                
+                            nombre_split = f"{archivo['name'].replace('.pdf', '')}_Pag_{p+1}.pdf"
+                            
+                            escritor = PdfWriter()
+                            escritor.add_page(lector.pages[p])
+                            b = io.BytesIO()
+                            escritor.write(b)
+                            pagina_bytes = b.getvalue()
+                            
+                            # Reutilizar resultado de la pág 1 para ahorrar API, procesar el resto
+                            datos_pagina = datos_json_p1 if p == 0 else procesar_con_ia_y_reintentos(pagina_bytes, status_text_ui, nombre_split)
+                            
+                            nuevo_id = crear_nuevo_archivo_drive(drive_service, nombre_split, id_destino, pagina_bytes, datos_pagina)
+                            st.session_state.acciones_rollback.append({"tipo": "create", "file_id": nuevo_id})
+                            archivos_exitosos += 1
+                        
+                        if not st.session_state.detener_proceso:
+                            # Enviar el documento original gigante a la papelera (se recupera en rollback)
+                            drive_service.files().update(fileId=archivo['id'], body={'trashed': True}).execute(num_retries=3)
+                            st.session_state.acciones_rollback.append({"tipo": "trash", "file_id": archivo['id']})
+
             except Exception as e:
-                # Si falló, lo sacamos de la lista de rollback para no romper el proceso
-                if archivo['id'] in st.session_state.archivos_movidos_lote:
-                    st.session_state.archivos_movidos_lote.remove(archivo['id'])
-                
+                # Si un archivo falla, lo dejamos en pendientes y continuamos con el siguiente
                 archivos_fallidos += 1
                 lista_errores.append(f"**{archivo['name']}**: {e}")
                 
             barra_progreso.progress((i + 1) / len(archivos))
             
-        # --- RESUMEN FINAL DE ÉXITO ---
+            if st.session_state.detener_proceso:
+                break
+            
+        # --- RESUMEN FINAL ---
         st.session_state.procesando_ia = False
-        st.session_state.archivos_movidos_lote = [] # Vaciamos la lista porque el lote terminó exitosamente
+        st.session_state.acciones_rollback = []
         status_text_ui.empty() 
         
         st.markdown("---")
         st.subheader("📊 Resumen del Procesamiento")
-        st.success(f"✅ Procesados y movidos exitosamente: **{archivos_exitosos}**")
+        st.success(f"✅ Archivos/Páginas procesadas exitosamente: **{archivos_exitosos}**")
         
         if archivos_fallidos > 0:
             st.error(f"❌ Fallidos (Siguen en pendientes): **{archivos_fallidos}**")
