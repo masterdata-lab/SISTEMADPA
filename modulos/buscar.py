@@ -40,46 +40,62 @@ def modulo_buscar(drive_service, sheets_client, SHEET_ID):
     st.header("🔍 Buscar Documento")
     st.divider()
 
-    # Barra de búsqueda
+    # 1. Cargamos la base de datos PRIMERO para poder llenar el desplegable
+    with st.spinner("Cargando patentes disponibles..."):
+        registros_bd = obtener_datos_sheets(sheets_client, SHEET_ID)
+        
+    # Extraemos solo las patentes, eliminamos vacíos, y las ordenamos alfabéticamente
+    lista_patentes = sorted(list(set([str(reg.get('PATENTE', '')).strip().upper() for reg in registros_bd if reg.get('PATENTE')])))
+
+    # 2. Barra de búsqueda con autocompletado
     col_busqueda, col_vacia = st.columns([1, 2])
     with col_busqueda:
-        patente_input = st.text_input("Ingrese la Patente a buscar:", placeholder="Ej. AG871VL").strip().upper()
+        patente_input = st.selectbox(
+            "Seleccione o escriba la Patente a buscar:", 
+            options=lista_patentes,
+            index=None,
+            placeholder="Ej. AG871VL"
+        )
 
+    # 3. Si el usuario seleccionó/escribió algo, mostramos los datos
     if patente_input:
-        with st.spinner("Buscando en la base de datos..."):
-            registros_bd = obtener_datos_sheets(sheets_client, SHEET_ID)
-            
-            # Buscar coincidencia exacta
-            registro_encontrado = None
-            for reg in registros_bd:
-                if str(reg.get('PATENTE', '')).strip().upper() == patente_input:
-                    registro_encontrado = reg
-                    break
+        # Buscamos el registro exacto en la base
+        registro_encontrado = next((reg for reg in registros_bd if str(reg.get('PATENTE', '')).strip().upper() == patente_input), None)
 
         if registro_encontrado:
             st.success(f"✅ Título encontrado para la patente: **{patente_input}**")
             
             id_drive = registro_encontrado.get('ID_DRIVE')
             
-            # Layout de resultados
-            col_info, col_visor = st.columns([1, 2])
+            # Layout de resultados: 40% info / 60% visor
+            col_info, col_visor = st.columns([2, 3])
             
             with col_info:
                 st.subheader("Datos del Vehículo")
-                st.info(f"""
-                **Titular:** {registro_encontrado.get('TITULAR', 'N/A')}
-                **Marca:** {registro_encontrado.get('MARCA', 'N/A')}
-                **Modelo:** {registro_encontrado.get('MODELO', 'N/A')}
-                **Chasis:** {registro_encontrado.get('NRO_CHASIS', 'N/A')}
-                **Motor:** {registro_encontrado.get('NRO_MOTOR', 'N/A')}
-                **Radicación:** {registro_encontrado.get('LUGAR_RADICACION', 'N/A')}
-                """)
                 
-                st.divider()
+                # --- NUEVO DISEÑO EN CUADROS PARA LOS DATOS ---
+                with st.container(border=True):
+                    st.markdown(f"**👤 Titular:** {registro_encontrado.get('TITULAR', 'N/A')}")
+                    st.divider()
+                    
+                    # Fila 1: Marca y Modelo
+                    c1, c2 = st.columns(2)
+                    c1.metric(label="Marca", value=registro_encontrado.get('MARCA', 'N/A'))
+                    c2.metric(label="Modelo", value=registro_encontrado.get('MODELO', 'N/A'))
+                    
+                    # Fila 2: Chasis y Motor
+                    c3, c4 = st.columns(2)
+                    c3.metric(label="Chasis", value=registro_encontrado.get('NRO_CHASIS', 'N/A'))
+                    c4.metric(label="Motor", value=registro_encontrado.get('NRO_MOTOR', 'N/A'))
+                    
+                    st.divider()
+                    st.markdown(f"**📍 Radicación:** {registro_encontrado.get('LUGAR_RADICACION', 'N/A')}")
+                # ----------------------------------------------
+                
                 st.subheader("Acciones Rápidas")
                 
                 if id_drive:
-                    # 1. Botón de Descarga
+                    # Acción 1: Botón de Descarga
                     pdf_bytes = descargar_pdf_bytes(drive_service, id_drive)
                     if pdf_bytes:
                         st.download_button(
@@ -91,21 +107,24 @@ def modulo_buscar(drive_service, sheets_client, SHEET_ID):
                             type="primary"
                         )
                     
-                    # 2. Enviar por Email (mailto link)
+                    # Acción 2: Enviar por Gmail (Enlace a Drive)
+                    url_drive = f"https://drive.google.com/file/d/{id_drive}/view"
+                    
                     asunto = urllib.parse.quote(f"Título del Vehículo - Patente {patente_input}")
-                    cuerpo = urllib.parse.quote(f"Adjunto información del vehículo patente {patente_input}.\n\nMarca: {registro_encontrado.get('MARCA')}\nModelo: {registro_encontrado.get('MODELO')}")
-                    mailto_link = f"mailto:?subject={asunto}&body={cuerpo}"
+                    cuerpo = urllib.parse.quote(f"Hola,\n\nTe comparto la información y el documento del vehículo patente {patente_input}.\n\nMarca: {registro_encontrado.get('MARCA')}\nModelo: {registro_encontrado.get('MODELO')}\nChasis: {registro_encontrado.get('NRO_CHASIS')}\n\n📄 Ver documento (Google Drive): {url_drive}")
+                    
+                    gmail_link = f"https://mail.google.com/mail/?view=cm&fs=1&su={asunto}&body={cuerpo}"
                     
                     st.markdown(
                         f"""
-                        <a href="{mailto_link}" style="display: block; text-align: center; text-decoration: none; color: white; background-color: #4CAF50; padding: 10px; border-radius: 5px; font-weight: bold; margin-bottom: 10px;">
-                            ✉️ Enviar por Correo Electrónico
+                        <a href="{gmail_link}" target="_blank" style="display: block; text-align: center; text-decoration: none; color: white; background-color: #EA4335; padding: 10px; border-radius: 5px; font-weight: bold; margin-bottom: 10px;">
+                            ✉️ Redactar en Gmail
                         </a>
                         """, 
                         unsafe_allow_html=True
                     )
                     
-                    # 3. Imprimir
+                    # Acción 3: Imprimir (Nativo)
                     st.caption("🖨️ *Para imprimir, utiliza el ícono de la impresora en la esquina superior derecha del visor del PDF.*")
                 else:
                     st.error("El registro no tiene un ID de archivo asociado válido.")
@@ -116,4 +135,4 @@ def modulo_buscar(drive_service, sheets_client, SHEET_ID):
                     mostrar_visor_pdf(id_drive)
                 
         else:
-            st.warning(f"No se encontraron registros para la patente: **{patente_input}**")
+            st.warning(f"Ocurrió un error al cargar los datos de: **{patente_input}**")
