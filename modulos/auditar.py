@@ -104,7 +104,8 @@ def modulo_auditar(drive_service, sheets_client, TIPO_DOC, SHEET_ID):
         if not lista_nuevos:
             st.info("No hay documentos nuevos.")
         else:
-            col_lista, col_visor, col_datos = st.columns([2, 2, 1.5])
+            # Aquí está la corrección de proporciones solicitada: 2 para lista, 4 para visor, 3 para datos
+            col_lista, col_visor, col_datos = st.columns([2, 4, 3])
             
             with col_lista:
                 st.subheader("Lista de Documentos")
