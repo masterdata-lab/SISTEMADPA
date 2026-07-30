@@ -145,7 +145,7 @@ def modulo_auditar(drive_service, sheets_client, TIPO_DOC, SHEET_ID):
                 evento_seleccion = st.dataframe(
                     df_mostrar,
                     on_select="rerun",
-                    selection_mode="multi-row",
+                    selection_mode="single-row",
                     use_container_width=True,
                     hide_index=True
                 )
