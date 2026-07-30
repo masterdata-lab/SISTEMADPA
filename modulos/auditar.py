@@ -18,7 +18,7 @@ def obtener_datos_sheets(sheets_client, SHEET_ID):
         return None, []
 
 def mostrar_visor_pdf(drive_service, file_id, height=600):
-    """Descarga el PDF y lo muestra usando st.markdown para evitar bloqueos de Chrome."""
+    """Descarga el PDF y lo muestra usando <embed> para evitar bloqueos de seguridad de Chrome."""
     try:
         request = drive_service.files().get_media(fileId=file_id)
         fh = io.BytesIO()
@@ -28,8 +28,14 @@ def mostrar_visor_pdf(drive_service, file_id, height=600):
             _, done = downloader.next_chunk()
         
         base64_pdf = base64.b64encode(fh.getvalue()).decode('utf-8')
-        # Inyectamos el visor nativo directamente saltando el sandbox del componente
-        pdf_display = f'<iframe src="data:application/pdf;base64,{base64_pdf}" width="100%" height="{height}" type="application/pdf" style="border: none;"></iframe>'
+        
+        # Usamos <embed> en lugar de <iframe> para evitar bloqueos CSP del navegador
+        pdf_display = f'''
+            <embed src="data:application/pdf;base64,{base64_pdf}" 
+                   width="100%" 
+                   height="{height}" 
+                   type="application/pdf">
+        '''
         st.markdown(pdf_display, unsafe_allow_html=True)
     except Exception as e:
         st.error(f"Error al cargar PDF: {e}")
@@ -49,7 +55,6 @@ def preparar_fila_excel(id_drive, nombre, datos, estado="Aprobado"):
     """Ordena los datos exactos según las columnas solicitadas para Sheets."""
     fecha_hoy = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
     
-    # Manejamos los datos previendo que puedan estar vacíos (None o string vacío)
     def limpiar(texto):
         return str(texto).upper().strip() if texto else ""
 
@@ -98,7 +103,6 @@ def modulo_auditar(drive_service, sheets_client, TIPO_DOC, SHEET_ID):
         st.success("🎉 No hay documentos pendientes de auditar.")
         return
 
-    # Listas en Python puro (para no perder la estructura del diccionario)
     lista_nuevos = []
     lista_duplicados = []
     
@@ -112,7 +116,7 @@ def modulo_auditar(drive_service, sheets_client, TIPO_DOC, SHEET_ID):
             "Patente": patente,
             "Titular": props.get('titular', ''),
             "Chasis": props.get('nro_chasis', ''),
-            "Data_Raw": props # Guardamos el diccionario intacto
+            "Data_Raw": props
         }
         
         if patente in patentes_existentes and patente != "SIN PATENTE":
@@ -133,10 +137,11 @@ def modulo_auditar(drive_service, sheets_client, TIPO_DOC, SHEET_ID):
             
             with col_lista:
                 st.subheader("Lista de Documentos")
-                # Creamos el DataFrame pero SOLO con lo que queremos mostrar
+                # Instrucción visual para el usuario sobre cómo usar el teclado
+                st.info("💡 **Tip de selección rápida:**\n- Usa **Shift + Clic** para elegir un bloque de documentos seguidos.\n- Usa **Ctrl + Clic** para elegir salteados.")
+                
                 df_mostrar = pd.DataFrame(lista_nuevos)[["Patente", "Archivo", "Titular", "Chasis"]]
                 
-                # CORRECCIÓN: "multi-row" en lugar de "multi"
                 evento_seleccion = st.dataframe(
                     df_mostrar,
                     on_select="rerun",
@@ -149,7 +154,6 @@ def modulo_auditar(drive_service, sheets_client, TIPO_DOC, SHEET_ID):
 
             # --- SI SELECCIONÓ EXACTAMENTE UNO ---
             if len(indices_seleccionados) == 1:
-                # Buscamos en nuestra lista Python original para evitar el AttributeError
                 doc_actual = lista_nuevos[indices_seleccionados[0]]
                 datos_ia = doc_actual["Data_Raw"] 
                 
@@ -185,10 +189,11 @@ def modulo_auditar(drive_service, sheets_client, TIPO_DOC, SHEET_ID):
                             st.warning("Documento enviado a la papelera.")
                             st.rerun()
 
-            # --- SI SELECCIONÓ VARIOS (APROBACIÓN MASIVA) ---
+            # --- SI SELECCIONÓ VARIOS (APROBACIÓN MASIVA + MÚLTIPLES PDFs) ---
             elif len(indices_seleccionados) > 1:
                 with col_visor:
-                    st.info(f"Seleccionaste {len(indices_seleccionados)} documentos para aprobación masiva.")
+                    st.info(f"Seleccionaste {len(indices_seleccionados)} documentos.")
+                    
                     if st.button("🚀 Aprobar Lote Seleccionado", type="primary", use_container_width=True):
                         barra = st.progress(0)
                         for i, idx in enumerate(indices_seleccionados):
@@ -199,6 +204,20 @@ def modulo_auditar(drive_service, sheets_client, TIPO_DOC, SHEET_ID):
                             barra.progress((i + 1) / len(indices_seleccionados))
                         st.success("Lote aprobado exitosamente.")
                         st.rerun()
+
+                    st.markdown("### Vista Previa del Lote")
+                    contenedor_pdfs = st.container(height=600)
+                    with contenedor_pdfs:
+                        for idx in indices_seleccionados:
+                            doc_actual = lista_nuevos[idx]
+                            st.markdown(f"**📄 {doc_actual['Archivo']}** (Patente: {doc_actual['Patente']})")
+                            mostrar_visor_pdf(drive_service, doc_actual["ID_Drive"], height=350)
+                            st.divider()
+
+                with col_datos:
+                    st.warning("⚠️ Edición manual deshabilitada.")
+                    st.write("Al seleccionar múltiples documentos, los datos se guardarán exactamente como los extrajo la IA. Si necesitas corregir un dato, selecciona ese documento individualmente en la lista.")
+
             else:
                 with col_visor:
                     st.write("👈 Haz clic en cualquier documento de la lista para auditarlo.")
@@ -213,7 +232,6 @@ def modulo_auditar(drive_service, sheets_client, TIPO_DOC, SHEET_ID):
             df_mostrar_dup = pd.DataFrame(lista_duplicados)[["Patente", "Archivo", "Titular", "Chasis"]]
             st.write("Haz clic en una fila para resolver el conflicto.")
             
-            # CORRECCIÓN: "single-row" en lugar de "single"
             evento_seleccion_dup = st.dataframe(
                 df_mostrar_dup,
                 on_select="rerun",
@@ -237,33 +255,31 @@ def modulo_auditar(drive_service, sheets_client, TIPO_DOC, SHEET_ID):
                 c_pdf_viejo, c_data_vieja, c_data_nueva, c_pdf_nuevo = st.columns(4)
                 
                 with c_pdf_viejo:
-                    st.caption("📄 PDF Aprobado Anteriormente")
+                    st.caption("📄 PDF Anterior")
                     if id_drive_viejo:
                         mostrar_visor_pdf(drive_service, id_drive_viejo, height=450)
                     else:
-                        st.error("No se encontró el archivo anterior en Drive.")
+                        st.error("Archivo anterior no encontrado.")
                 
                 with c_data_vieja:
-                    st.caption("🗄️ Datos en Google Sheets")
+                    st.caption("🗄️ Datos Guardados")
                     st.info(f"""
                     **Titular:** {datos_excel_viejos.get('TITULAR', '')}  
                     **Chasis:** {datos_excel_viejos.get('NRO_CHASIS', '')}  
                     **Motor:** {datos_excel_viejos.get('NRO_MOTOR', '')}  
-                    **Fecha Aud.:** {datos_excel_viejos.get('FECHA_AUDITORIA', '')}
                     """)
                     
                 with c_data_nueva:
-                    st.caption("🆕 Datos Documento Nuevo")
+                    st.caption("🆕 Nuevos Datos")
                     datos_ia = doc_nuevo["Data_Raw"]
                     st.success(f"""
                     **Titular:** {datos_ia.get('titular', '')}  
                     **Chasis:** {datos_ia.get('nro_chasis', '')}  
                     **Motor:** {datos_ia.get('nro_motor', '')}  
-                    **Archivo:** {doc_nuevo['Archivo']}
                     """)
                     
                 with c_pdf_nuevo:
-                    st.caption("📄 PDF Nuevo (Pendiente)")
+                    st.caption("📄 PDF Nuevo")
                     mostrar_visor_pdf(drive_service, doc_nuevo["ID_Drive"], height=450)
                 
                 st.markdown("<br>", unsafe_allow_html=True)
