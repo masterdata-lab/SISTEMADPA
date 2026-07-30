@@ -136,11 +136,11 @@ def modulo_auditar(drive_service, sheets_client, TIPO_DOC, SHEET_ID):
                 # Creamos el DataFrame pero SOLO con lo que queremos mostrar
                 df_mostrar = pd.DataFrame(lista_nuevos)[["Patente", "Archivo", "Titular", "Chasis"]]
                 
-                # Nueva forma de selección nativa de Streamlit (haciendo clic en la fila)
+                # CORRECCIÓN: "multi-row" en lugar de "multi"
                 evento_seleccion = st.dataframe(
                     df_mostrar,
                     on_select="rerun",
-                    selection_mode="multi",
+                    selection_mode="multi-row",
                     use_container_width=True,
                     hide_index=True
                 )
@@ -213,10 +213,11 @@ def modulo_auditar(drive_service, sheets_client, TIPO_DOC, SHEET_ID):
             df_mostrar_dup = pd.DataFrame(lista_duplicados)[["Patente", "Archivo", "Titular", "Chasis"]]
             st.write("Haz clic en una fila para resolver el conflicto.")
             
+            # CORRECCIÓN: "single-row" en lugar de "single"
             evento_seleccion_dup = st.dataframe(
                 df_mostrar_dup,
                 on_select="rerun",
-                selection_mode="single", # Forzamos a que solo puedan elegir de a uno
+                selection_mode="single-row",
                 use_container_width=True,
                 hide_index=True
             )
