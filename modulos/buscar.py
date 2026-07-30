@@ -15,7 +15,7 @@ def obtener_hoja_y_datos(sheets_client, SHEET_ID):
         st.error(f"Error al conectar con Google Sheets: {e}")
         return None, []
 
-def mostrar_visor_pdf(file_id, height=600):
+def mostrar_visor_pdf(file_id, height=750): # Aumenté un poco la altura del visor para compensar los nuevos campos
     url_preview = f"https://drive.google.com/file/d/{file_id}/preview"
     st.markdown(
         f'<iframe src="{url_preview}" width="100%" height="{height}px" style="border: none; border-radius: 8px;"></iframe>', 
@@ -69,8 +69,8 @@ def modulo_buscar(drive_service, sheets_client, SHEET_ID):
 
     # 3. Mostrar resultados
     if patente_input:
-        # Buscamos el registro exacto y guardamos su índice (posición en la lista)
-        # Nota: Le sumamos 2 al índice porque Google Sheets empieza en la fila 1 y la fila 1 es el encabezado.
+        # Buscamos el registro exacto y guardamos su índice
+        # Le sumamos 2 al índice porque Google Sheets empieza en la fila 1 y la fila 1 es el encabezado.
         fila_indice = next((i for i, reg in enumerate(registros_bd) if str(reg.get('PATENTE', '')).strip().upper() == patente_input), None)
         
         if fila_indice is not None:
@@ -95,7 +95,7 @@ def modulo_buscar(drive_service, sheets_client, SHEET_ID):
                 c_tit, c_btn = st.columns([2, 1])
                 c_tit.subheader("Datos del Vehículo")
                 
-                # Botón para activar modo edición (solo se muestra si no estamos editando)
+                # Botón para activar modo edición
                 if not st.session_state.modo_edicion:
                     if c_btn.button("✏️ Editar", use_container_width=True):
                         st.session_state.modo_edicion = True
@@ -104,26 +104,45 @@ def modulo_buscar(drive_service, sheets_client, SHEET_ID):
                 # --- LÓGICA DE VISTA vs EDICIÓN ---
                 if not st.session_state.modo_edicion:
                     # MODO LECTURA (Deshabilitado)
+                    # He agrupado visualmente los campos para que no sea una lista interminable
                     with st.container(border=True):
+                        st.markdown("**Identificación**")
                         st.text_input("Patente", value=registro_encontrado.get('PATENTE', ''), disabled=True)
+                        st.text_input("Fecha Inscripción", value=registro_encontrado.get('FECHA_INSCRIPCION_INICIAL', ''), disabled=True)
+                        
+                        st.markdown("**Vehículo**")
                         st.text_input("Marca", value=registro_encontrado.get('MARCA', ''), disabled=True)
                         st.text_input("Modelo", value=registro_encontrado.get('MODELO', ''), disabled=True)
+                        st.text_input("Tipo", value=registro_encontrado.get('TIPO', ''), disabled=True)
                         st.text_input("Chasis", value=registro_encontrado.get('NRO_CHASIS', ''), disabled=True)
                         st.text_input("Motor", value=registro_encontrado.get('NRO_MOTOR', ''), disabled=True)
+                        
+                        st.markdown("**Radicación y Titular**")
                         st.text_input("Titular", value=registro_encontrado.get('TITULAR', ''), disabled=True)
-                        st.text_input("Radicación", value=registro_encontrado.get('LUGAR_RADICACION', ''), disabled=True)
+                        st.text_input("CUIT", value=registro_encontrado.get('CUIT', ''), disabled=True)
+                        st.text_input("Lugar Radicación", value=registro_encontrado.get('LUGAR_RADICACION', ''), disabled=True)
+                        st.text_input("Provincia", value=registro_encontrado.get('PROVINCIA_RADICACION', ''), disabled=True)
                 
                 else:
                     # MODO EDICIÓN (Formulario habilitado)
                     st.info("Modifique los campos necesarios y guarde los cambios.")
                     with st.form("form_edicion_datos"):
+                        st.markdown("**Identificación**")
                         nuevo_patente = st.text_input("Patente", value=registro_encontrado.get('PATENTE', ''))
+                        nuevo_fecha = st.text_input("Fecha Inscripción", value=registro_encontrado.get('FECHA_INSCRIPCION_INICIAL', ''))
+                        
+                        st.markdown("**Vehículo**")
                         nuevo_marca = st.text_input("Marca", value=registro_encontrado.get('MARCA', ''))
                         nuevo_modelo = st.text_input("Modelo", value=registro_encontrado.get('MODELO', ''))
+                        nuevo_tipo = st.text_input("Tipo", value=registro_encontrado.get('TIPO', ''))
                         nuevo_chasis = st.text_input("Chasis", value=registro_encontrado.get('NRO_CHASIS', ''))
                         nuevo_motor = st.text_input("Motor", value=registro_encontrado.get('NRO_MOTOR', ''))
+                        
+                        st.markdown("**Radicación y Titular**")
                         nuevo_titular = st.text_input("Titular", value=registro_encontrado.get('TITULAR', ''))
-                        nuevo_radicacion = st.text_input("Radicación", value=registro_encontrado.get('LUGAR_RADICACION', ''))
+                        nuevo_cuit = st.text_input("CUIT", value=registro_encontrado.get('CUIT', ''))
+                        nuevo_radicacion = st.text_input("Lugar Radicación", value=registro_encontrado.get('LUGAR_RADICACION', ''))
+                        nuevo_provincia = st.text_input("Provincia", value=registro_encontrado.get('PROVINCIA_RADICACION', ''))
                         
                         st.markdown("<br>", unsafe_allow_html=True)
                         col_save, col_cancel = st.columns(2)
@@ -136,22 +155,28 @@ def modulo_buscar(drive_service, sheets_client, SHEET_ID):
                             
                         if btn_guardar:
                             with st.spinner("Actualizando base de datos..."):
-                                # Descargamos la fila original para no borrar datos de otras columnas (como fechas, ID drive, etc)
+                                # Descargamos la fila original
                                 fila_original = hoja.row_values(fila_real_sheets)
                                 
-                                # Asegurarnos de que la fila tenga al menos 11 elementos para evitar errores de índice
-                                while len(fila_original) < 11:
+                                # Asegurarnos de que la fila tenga al menos 15 elementos para cubrir todas las columnas
+                                while len(fila_original) < 15:
                                     fila_original.append("")
                                 
-                                # Actualizamos solo las columnas correspondientes (índices basados en tu estructura de auditar.py)
-                                # Col C=2, Col D=3, Col E=4, Col G=6, Col H=7, Col I=8, Col K=10
+                                # Actualizamos columnas (índices basados en tu estructura de auditar.py)
+                                # A=0(ID), B=1(Nombre), C=2(Pat), D=3(Mar), E=4(Mod), F=5(Tip), G=6(Cha), H=7(Mot), 
+                                # I=8(Tit), J=9(Cuit), K=10(Lug), L=11(Prov), M=12(Fec), N=13(Est), O=14(FechaAud)
+                                
                                 fila_original[2] = str(nuevo_patente).upper().strip()
                                 fila_original[3] = str(nuevo_marca).upper().strip()
                                 fila_original[4] = str(nuevo_modelo).upper().strip()
+                                fila_original[5] = str(nuevo_tipo).upper().strip()
                                 fila_original[6] = str(nuevo_chasis).upper().strip()
                                 fila_original[7] = str(nuevo_motor).upper().strip()
                                 fila_original[8] = str(nuevo_titular).upper().strip()
+                                fila_original[9] = str(nuevo_cuit).upper().strip()
                                 fila_original[10] = str(nuevo_radicacion).upper().strip()
+                                fila_original[11] = str(nuevo_provincia).upper().strip()
+                                fila_original[12] = str(nuevo_fecha).upper().strip()
                                 
                                 # Enviamos la fila completa actualizada a Sheets
                                 hoja.update(values=[fila_original], range_name=f"A{fila_real_sheets}:O{fila_real_sheets}")
