@@ -5,6 +5,7 @@ from conexion import conectar_google, obtener_o_crear_carpeta
 from modulos.carga import modulo_carga
 from modulos.procesar import modulo_procesar
 from modulos.auditar import modulo_auditar
+from modulos.buscar import modulo_buscar  # <-- NUEVA IMPORTACIÓN
 
 # --- CONFIGURACIÓN DEL MÓDULO ---
 TIPO_DOC = "Títulos"
@@ -31,8 +32,8 @@ if drive_service and sheets_client:
             st.session_state[f"id_aprobados_{TIPO_DOC}"] = obtener_o_crear_carpeta(drive_service, "3_Aprobados", id_tipo)
             st.session_state[clave_config] = True
 
-    # --- CREACIÓN DE LAS 3 PESTAÑAS ---
-    tab_carga, tab_procesar, tab_auditar = st.tabs(["1️⃣ Carga", "2️⃣ Procesar (IA)", "3️⃣ Auditar"])
+    # --- CREACIÓN DE LAS 4 PESTAÑAS ---
+    tab_carga, tab_procesar, tab_auditar, tab_buscar = st.tabs(["1️⃣ Carga", "2️⃣ Procesar (IA)", "3️⃣ Auditar", "4️⃣ Buscar"])
     
     with tab_carga:
         modulo_carga(drive_service, TIPO_DOC)
@@ -42,6 +43,9 @@ if drive_service and sheets_client:
         
     with tab_auditar:
         modulo_auditar(drive_service, sheets_client, TIPO_DOC, SHEET_ID)
+        
+    with tab_buscar:
+        modulo_buscar(drive_service, sheets_client, SHEET_ID)
 
 else:
     st.error("No se pudo conectar a los servicios de Google. Revisa tus credenciales.")
