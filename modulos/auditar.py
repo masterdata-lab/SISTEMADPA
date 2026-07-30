@@ -18,7 +18,7 @@ def obtener_datos_sheets(sheets_client, SHEET_ID):
         return None, []
 
 def mostrar_visor_pdf(drive_service, file_id, height=600):
-    """Descarga el PDF en memoria y lo muestra en un iFrame nativo."""
+    """Descarga el PDF y lo muestra usando st.markdown para evitar bloqueos de Chrome."""
     try:
         request = drive_service.files().get_media(fileId=file_id)
         fh = io.BytesIO()
@@ -28,8 +28,9 @@ def mostrar_visor_pdf(drive_service, file_id, height=600):
             _, done = downloader.next_chunk()
         
         base64_pdf = base64.b64encode(fh.getvalue()).decode('utf-8')
-        pdf_display = f'<iframe src="data:application/pdf;base64,{base64_pdf}" width="100%" height="{height}" type="application/pdf"></iframe>'
-        st.components.v1.html(pdf_display, height=height)
+        # Inyectamos el visor nativo directamente saltando el sandbox del componente
+        pdf_display = f'<iframe src="data:application/pdf;base64,{base64_pdf}" width="100%" height="{height}" type="application/pdf" style="border: none;"></iframe>'
+        st.markdown(pdf_display, unsafe_allow_html=True)
     except Exception as e:
         st.error(f"Error al cargar PDF: {e}")
 
@@ -47,20 +48,25 @@ def enviar_a_papelera(drive_service, file_id):
 def preparar_fila_excel(id_drive, nombre, datos, estado="Aprobado"):
     """Ordena los datos exactos según las columnas solicitadas para Sheets."""
     fecha_hoy = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+    
+    # Manejamos los datos previendo que puedan estar vacíos (None o string vacío)
+    def limpiar(texto):
+        return str(texto).upper().strip() if texto else ""
+
     return [
         id_drive,
         nombre,
-        datos.get('patente', '').upper(),
-        datos.get('marca', '').upper(),
-        datos.get('modelo', '').upper(),
-        datos.get('tipo', '').upper(),
-        datos.get('nro_chasis', '').upper(),
-        datos.get('nro_motor', '').upper(),
-        datos.get('titular', '').upper(),
-        datos.get('cuit', ''),
-        datos.get('lugar_radicacion', '').upper(),
-        datos.get('provincia_radicacion', '').upper(),
-        datos.get('fecha_inscripcion_inicial', ''),
+        limpiar(datos.get('patente')),
+        limpiar(datos.get('marca')),
+        limpiar(datos.get('modelo')),
+        limpiar(datos.get('tipo')),
+        limpiar(datos.get('nro_chasis')),
+        limpiar(datos.get('nro_motor')),
+        limpiar(datos.get('titular')),
+        limpiar(datos.get('cuit')),
+        limpiar(datos.get('lugar_radicacion')),
+        limpiar(datos.get('provincia_radicacion')),
+        limpiar(datos.get('fecha_inscripcion_inicial')),
         estado,
         fecha_hoy
     ]
@@ -81,10 +87,9 @@ def modulo_auditar(drive_service, sheets_client, TIPO_DOC, SHEET_ID):
     if hoja is None:
         return
 
-    # Diccionario rápido para buscar patentes existentes y saber en qué fila están
     patentes_existentes = {str(reg.get('PATENTE', '')).upper(): (i + 2, reg) for i, reg in enumerate(registros_bd) if reg.get('PATENTE')}
 
-    with st.spinner("Escaneando documentos pendientes y cruzando datos..."):
+    with st.spinner("Escaneando documentos pendientes..."):
         query = f"'{id_origen}' in parents and trashed=false"
         resultados = drive_service.files().list(q=query, fields="files(id, name, appProperties)").execute(num_retries=3)
         archivos_pendientes = resultados.get('files', [])
@@ -93,62 +98,60 @@ def modulo_auditar(drive_service, sheets_client, TIPO_DOC, SHEET_ID):
         st.success("🎉 No hay documentos pendientes de auditar.")
         return
 
-    # Clasificamos entre Nuevos y Duplicados
+    # Listas en Python puro (para no perder la estructura del diccionario)
     lista_nuevos = []
     lista_duplicados = []
     
     for arch in archivos_pendientes:
         props = arch.get('appProperties', {})
-        patente = props.get('patente', '').upper()
+        patente = props.get('patente', '').upper() if props.get('patente') else "SIN PATENTE"
         
-        # Estructura para la tabla
-        fila_ui = {
-            "Seleccionar": False,
+        diccionario_datos = {
             "ID_Drive": arch['id'],
             "Archivo": arch['name'],
             "Patente": patente,
             "Titular": props.get('titular', ''),
             "Chasis": props.get('nro_chasis', ''),
-            "Data_Raw": props # Guardamos los datos completos ocultos para usarlos luego
+            "Data_Raw": props # Guardamos el diccionario intacto
         }
         
-        if patente in patentes_existentes:
-            lista_duplicados.append(fila_ui)
+        if patente in patentes_existentes and patente != "SIN PATENTE":
+            lista_duplicados.append(diccionario_datos)
         else:
-            lista_nuevos.append(fila_ui)
+            lista_nuevos.append(diccionario_datos)
 
-    # --- INTERFAZ CON PESTAÑAS ---
     tab_nuevos, tab_duplicados = st.tabs([f"🟢 Nuevos ({len(lista_nuevos)})", f"🟠 Duplicados ({len(lista_duplicados)})"])
 
     # ==========================================
-    # PESTAÑA 1: NUEVOS (Flujo Rápido)
+    # PESTAÑA 1: NUEVOS
     # ==========================================
     with tab_nuevos:
         if not lista_nuevos:
             st.info("No hay documentos nuevos.")
         else:
-            df_nuevos = pd.DataFrame(lista_nuevos)
-            
             col_lista, col_visor, col_datos = st.columns([1.5, 2, 1.5])
             
             with col_lista:
                 st.subheader("Lista de Documentos")
-                # Data Editor permite tildar casillas
-                df_editado = st.data_editor(
-                    df_nuevos,
-                    column_config={"Seleccionar": st.column_config.CheckboxColumn(required=True), "Data_Raw": None}, # Ocultamos la raw data
-                    disabled=["Archivo", "Patente", "Titular", "Chasis", "ID_Drive"],
-                    hide_index=True,
-                    key="editor_nuevos",
-                    use_container_width=True
+                # Creamos el DataFrame pero SOLO con lo que queremos mostrar
+                df_mostrar = pd.DataFrame(lista_nuevos)[["Patente", "Archivo", "Titular", "Chasis"]]
+                
+                # Nueva forma de selección nativa de Streamlit (haciendo clic en la fila)
+                evento_seleccion = st.dataframe(
+                    df_mostrar,
+                    on_select="rerun",
+                    selection_mode="multi",
+                    use_container_width=True,
+                    hide_index=True
                 )
                 
-                seleccionados = df_editado[df_editado["Seleccionar"] == True]
+                indices_seleccionados = evento_seleccion.selection.rows
 
-            # Si seleccionó EXACTAMENTE UNO: Mostramos Visor y Formulario
-            if len(seleccionados) == 1:
-                doc_actual = seleccionados.iloc[0]
-                datos_ia = doc_actual["Data_Raw"]
+            # --- SI SELECCIONÓ EXACTAMENTE UNO ---
+            if len(indices_seleccionados) == 1:
+                # Buscamos en nuestra lista Python original para evitar el AttributeError
+                doc_actual = lista_nuevos[indices_seleccionados[0]]
+                datos_ia = doc_actual["Data_Raw"] 
                 
                 with col_visor:
                     st.subheader(f"📄 {doc_actual['Archivo']}")
@@ -182,57 +185,54 @@ def modulo_auditar(drive_service, sheets_client, TIPO_DOC, SHEET_ID):
                             st.warning("Documento enviado a la papelera.")
                             st.rerun()
 
-            # Si seleccionó VARIOS: Mostramos botón masivo
-            elif len(seleccionados) > 1:
+            # --- SI SELECCIONÓ VARIOS (APROBACIÓN MASIVA) ---
+            elif len(indices_seleccionados) > 1:
                 with col_visor:
-                    st.info(f"Seleccionaste {len(seleccionados)} documentos para aprobación masiva.")
+                    st.info(f"Seleccionaste {len(indices_seleccionados)} documentos para aprobación masiva.")
                     if st.button("🚀 Aprobar Lote Seleccionado", type="primary", use_container_width=True):
                         barra = st.progress(0)
-                        for i, (_, doc) in enumerate(seleccionados.iterrows()):
-                            fila = preparar_fila_excel(doc["ID_Drive"], doc["Archivo"], doc["Data_Raw"])
+                        for i, idx in enumerate(indices_seleccionados):
+                            doc_actual = lista_nuevos[idx]
+                            fila = preparar_fila_excel(doc_actual["ID_Drive"], doc_actual["Archivo"], doc_actual["Data_Raw"])
                             hoja.append_row(fila)
-                            mover_archivo_aprobados(drive_service, doc["ID_Drive"], id_origen, id_destino)
-                            barra.progress((i + 1) / len(seleccionados))
+                            mover_archivo_aprobados(drive_service, doc_actual["ID_Drive"], id_origen, id_destino)
+                            barra.progress((i + 1) / len(indices_seleccionados))
                         st.success("Lote aprobado exitosamente.")
                         st.rerun()
             else:
                 with col_visor:
-                    st.write("👈 Selecciona un documento de la lista para auditarlo.")
+                    st.write("👈 Haz clic en cualquier documento de la lista para auditarlo.")
 
     # ==========================================
-    # PESTAÑA 2: DUPLICADOS (Resolución de Conflictos)
+    # PESTAÑA 2: DUPLICADOS
     # ==========================================
     with tab_duplicados:
         if not lista_duplicados:
             st.info("No se detectaron conflictos de patentes.")
         else:
-            df_duplicados = pd.DataFrame(lista_duplicados)
-            st.write("Estos documentos tienen patentes que ya existen en la base de datos.")
+            df_mostrar_dup = pd.DataFrame(lista_duplicados)[["Patente", "Archivo", "Titular", "Chasis"]]
+            st.write("Haz clic en una fila para resolver el conflicto.")
             
-            df_edit_dup = st.data_editor(
-                df_duplicados,
-                column_config={"Seleccionar": st.column_config.CheckboxColumn(required=True), "Data_Raw": None},
-                disabled=["Archivo", "Patente", "Titular", "Chasis", "ID_Drive"],
-                hide_index=True,
-                key="editor_duplicados"
+            evento_seleccion_dup = st.dataframe(
+                df_mostrar_dup,
+                on_select="rerun",
+                selection_mode="single", # Forzamos a que solo puedan elegir de a uno
+                use_container_width=True,
+                hide_index=True
             )
             
-            seleccionados_dup = df_edit_dup[df_edit_dup["Seleccionar"] == True]
+            indices_dup = evento_seleccion_dup.selection.rows
             
-            if len(seleccionados_dup) > 1:
-                st.warning("⚠️ Por favor, selecciona solo un duplicado a la vez para resolver el conflicto.")
-            elif len(seleccionados_dup) == 1:
-                doc_nuevo = seleccionados_dup.iloc[0]
+            if len(indices_dup) == 1:
+                doc_nuevo = lista_duplicados[indices_dup[0]]
                 patente_conflicto = doc_nuevo["Patente"]
                 
-                # Rescatamos datos viejos del diccionario armado al principio
                 fila_excel_vieja, datos_excel_viejos = patentes_existentes[patente_conflicto]
                 id_drive_viejo = datos_excel_viejos.get('ID_DRIVE')
                 
                 st.markdown("---")
                 st.subheader(f"⚖️ Resolución de Conflicto: Dominio {patente_conflicto}")
                 
-                # LAS 4 COLUMNAS DE COMPARACIÓN
                 c_pdf_viejo, c_data_vieja, c_data_nueva, c_pdf_nuevo = st.columns(4)
                 
                 with c_pdf_viejo:
@@ -240,7 +240,7 @@ def modulo_auditar(drive_service, sheets_client, TIPO_DOC, SHEET_ID):
                     if id_drive_viejo:
                         mostrar_visor_pdf(drive_service, id_drive_viejo, height=450)
                     else:
-                        st.error("No se encontró el ID del archivo anterior.")
+                        st.error("No se encontró el archivo anterior en Drive.")
                 
                 with c_data_vieja:
                     st.caption("🗄️ Datos en Google Sheets")
@@ -271,20 +271,15 @@ def modulo_auditar(drive_service, sheets_client, TIPO_DOC, SHEET_ID):
                 with col_btn1:
                     if st.button("🔄 Reemplazar Documento Anterior", type="primary", use_container_width=True):
                         with st.spinner("Ejecutando reemplazo..."):
-                            # 1. Borrar viejo de drive
                             if id_drive_viejo:
                                 try:
                                     enviar_a_papelera(drive_service, id_drive_viejo)
                                 except:
-                                    pass # Si ya no existe, ignoramos
+                                    pass 
                             
-                            # 2. Actualizar fila en Excel (Sobrescribimos)
                             fila_nueva = preparar_fila_excel(doc_nuevo["ID_Drive"], doc_nuevo["Archivo"], datos_ia, "Reemplazado")
-                            # gspread actualiza el rango exacto de la fila
                             rango = f"A{fila_excel_vieja}:O{fila_excel_vieja}"
                             hoja.update(values=[fila_nueva], range_name=rango)
-                            
-                            # 3. Mover el nuevo archivo a aprobados
                             mover_archivo_aprobados(drive_service, doc_nuevo["ID_Drive"], id_origen, id_destino)
                             
                         st.success("Reemplazo exitoso.")
