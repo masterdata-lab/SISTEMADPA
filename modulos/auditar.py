@@ -8,7 +8,6 @@ from googleapiclient.http import MediaIoBaseDownload
 # --- FUNCIONES AUXILIARES ---
 
 def obtener_datos_sheets(sheets_client, SHEET_ID):
-    """Obtiene todos los registros de la hoja para buscar duplicados."""
     try:
         hoja = sheets_client.open_by_key(SHEET_ID).sheet1
         registros = hoja.get_all_records()
@@ -18,7 +17,7 @@ def obtener_datos_sheets(sheets_client, SHEET_ID):
         return None, []
 
 def mostrar_visor_pdf(drive_service, file_id, height=600):
-    """Descarga el PDF y lo muestra usando <embed> para evitar bloqueos de seguridad de Chrome."""
+    """Muestra el PDF y añade un botón de descarga por si el navegador bloquea la previsualización."""
     try:
         request = drive_service.files().get_media(fileId=file_id)
         fh = io.BytesIO()
@@ -27,9 +26,18 @@ def mostrar_visor_pdf(drive_service, file_id, height=600):
         while done is False:
             _, done = downloader.next_chunk()
         
-        base64_pdf = base64.b64encode(fh.getvalue()).decode('utf-8')
+        pdf_bytes = fh.getvalue()
+        base64_pdf = base64.b64encode(pdf_bytes).decode('utf-8')
         
-        # Usamos <embed> en lugar de <iframe> para evitar bloqueos CSP del navegador
+        # Botón de descarga de emergencia por bloqueos de Chrome
+        st.download_button(
+            label="📥 Descargar PDF (Si el visor no carga)",
+            data=pdf_bytes,
+            file_name=f"documento_{file_id}.pdf",
+            mime="application/pdf",
+            use_container_width=True
+        )
+
         pdf_display = f'''
             <embed src="data:application/pdf;base64,{base64_pdf}" 
                    width="100%" 
@@ -42,38 +50,23 @@ def mostrar_visor_pdf(drive_service, file_id, height=600):
 
 def mover_archivo_aprobados(drive_service, file_id, id_origen, id_destino):
     drive_service.files().update(
-        fileId=file_id,
-        addParents=id_destino,
-        removeParents=id_origen,
-        fields='id, parents'
+        fileId=file_id, addParents=id_destino, removeParents=id_origen, fields='id, parents'
     ).execute(num_retries=3)
 
 def enviar_a_papelera(drive_service, file_id):
     drive_service.files().update(fileId=file_id, body={'trashed': True}).execute(num_retries=3)
 
 def preparar_fila_excel(id_drive, nombre, datos, estado="Aprobado"):
-    """Ordena los datos exactos según las columnas solicitadas para Sheets."""
     fecha_hoy = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
-    
     def limpiar(texto):
         return str(texto).upper().strip() if texto else ""
 
     return [
-        id_drive,
-        nombre,
-        limpiar(datos.get('patente')),
-        limpiar(datos.get('marca')),
-        limpiar(datos.get('modelo')),
-        limpiar(datos.get('tipo')),
-        limpiar(datos.get('nro_chasis')),
-        limpiar(datos.get('nro_motor')),
-        limpiar(datos.get('titular')),
-        limpiar(datos.get('cuit')),
-        limpiar(datos.get('lugar_radicacion')),
-        limpiar(datos.get('provincia_radicacion')),
-        limpiar(datos.get('fecha_inscripcion_inicial')),
-        estado,
-        fecha_hoy
+        id_drive, nombre, limpiar(datos.get('patente')), limpiar(datos.get('marca')),
+        limpiar(datos.get('modelo')), limpiar(datos.get('tipo')), limpiar(datos.get('nro_chasis')),
+        limpiar(datos.get('nro_motor')), limpiar(datos.get('titular')), limpiar(datos.get('cuit')),
+        limpiar(datos.get('lugar_radicacion')), limpiar(datos.get('provincia_radicacion')),
+        limpiar(datos.get('fecha_inscripcion_inicial')), estado, fecha_hoy
     ]
 
 # --- MÓDULO PRINCIPAL ---
@@ -87,6 +80,12 @@ def modulo_auditar(drive_service, sheets_client, TIPO_DOC, SHEET_ID):
     if not id_origen or not id_destino:
         st.error("Error con las carpetas de Drive. Por favor, recarga la página.")
         return
+
+    # Inicializar estados de selección si no existen
+    if "indice_seleccionado" not in st.session_state:
+        st.session_state.indice_seleccionado = None
+    if "indice_dup_seleccionado" not in st.session_state:
+        st.session_state.indice_dup_seleccionado = None
 
     hoja, registros_bd = obtener_datos_sheets(sheets_client, SHEET_ID)
     if hoja is None:
@@ -115,7 +114,6 @@ def modulo_auditar(drive_service, sheets_client, TIPO_DOC, SHEET_ID):
             "Archivo": arch['name'],
             "Patente": patente,
             "Titular": props.get('titular', ''),
-            "Chasis": props.get('nro_chasis', ''),
             "Data_Raw": props
         }
         
@@ -137,24 +135,26 @@ def modulo_auditar(drive_service, sheets_client, TIPO_DOC, SHEET_ID):
             
             with col_lista:
                 st.subheader("Lista de Documentos")
-                # Instrucción visual para el usuario sobre cómo usar el teclado
-                st.info("💡 **Tip de selección rápida:**\n- Usa **Shift + Clic** para elegir un bloque de documentos seguidos.\n- Usa **Ctrl + Clic** para elegir salteados.")
+                st.caption("💡 Haz clic sobre cualquier fila para auditar el documento.")
                 
-                df_mostrar = pd.DataFrame(lista_nuevos)[["Patente", "Archivo", "Titular", "Chasis"]]
-                
-                evento_seleccion = st.dataframe(
-                    df_mostrar,
-                    on_select="rerun",
-                    selection_mode="single-row",
-                    use_container_width=True,
-                    hide_index=True
-                )
-                
-                indices_seleccionados = evento_seleccion.selection.rows
+                with st.container(height=500):
+                    cabecera = st.columns([1, 2, 2])
+                    cabecera[0].markdown("**Patente**")
+                    cabecera[1].markdown("**Archivo**")
+                    cabecera[2].markdown("**Titular**")
+                    st.divider()
+                    
+                    for idx, doc in enumerate(lista_nuevos):
+                        texto_fila = f"🔑 {doc['Patente']}  |  📄 {doc['Archivo'][:15]}...  |  👤 {doc['Titular'][:12]}"
+                        tipo_boton = "primary" if st.session_state.indice_seleccionado == idx else "secondary"
+                        
+                        if st.button(texto_fila, key=f"btn_doc_{idx}", use_container_width=True, type=tipo_boton):
+                            st.session_state.indice_seleccionado = idx
+                            st.rerun()
 
-            # --- SI SELECCIONÓ EXACTAMENTE UNO ---
-            if len(indices_seleccionados) == 1:
-                doc_actual = lista_nuevos[indices_seleccionados[0]]
+            # --- VALIDAR SI HAY UNA FILA SELECCIONADA ---
+            if st.session_state.indice_seleccionado is not None and st.session_state.indice_seleccionado < len(lista_nuevos):
+                doc_actual = lista_nuevos[st.session_state.indice_seleccionado]
                 datos_ia = doc_actual["Data_Raw"] 
                 
                 with col_visor:
@@ -177,50 +177,22 @@ def modulo_auditar(drive_service, sheets_client, TIPO_DOC, SHEET_ID):
                         if btn_aprobar:
                             datos_corregidos = datos_ia.copy()
                             datos_corregidos.update({'patente': pat, 'marca': mar, 'modelo': mod, 'nro_chasis': cha, 'nro_motor': mot, 'titular': tit})
-                            
                             fila = preparar_fila_excel(doc_actual["ID_Drive"], doc_actual["Archivo"], datos_corregidos)
                             hoja.append_row(fila)
                             mover_archivo_aprobados(drive_service, doc_actual["ID_Drive"], id_origen, id_destino)
+                            
+                            st.session_state.indice_seleccionado = None
                             st.success("Aprobado exitosamente.")
                             st.rerun()
                             
                         if btn_rechazar:
                             enviar_a_papelera(drive_service, doc_actual["ID_Drive"])
+                            st.session_state.indice_seleccionado = None
                             st.warning("Documento enviado a la papelera.")
                             st.rerun()
-
-            # --- SI SELECCIONÓ VARIOS (APROBACIÓN MASIVA + MÚLTIPLES PDFs) ---
-            elif len(indices_seleccionados) > 1:
-                with col_visor:
-                    st.info(f"Seleccionaste {len(indices_seleccionados)} documentos.")
-                    
-                    if st.button("🚀 Aprobar Lote Seleccionado", type="primary", use_container_width=True):
-                        barra = st.progress(0)
-                        for i, idx in enumerate(indices_seleccionados):
-                            doc_actual = lista_nuevos[idx]
-                            fila = preparar_fila_excel(doc_actual["ID_Drive"], doc_actual["Archivo"], doc_actual["Data_Raw"])
-                            hoja.append_row(fila)
-                            mover_archivo_aprobados(drive_service, doc_actual["ID_Drive"], id_origen, id_destino)
-                            barra.progress((i + 1) / len(indices_seleccionados))
-                        st.success("Lote aprobado exitosamente.")
-                        st.rerun()
-
-                    st.markdown("### Vista Previa del Lote")
-                    contenedor_pdfs = st.container(height=600)
-                    with contenedor_pdfs:
-                        for idx in indices_seleccionados:
-                            doc_actual = lista_nuevos[idx]
-                            st.markdown(f"**📄 {doc_actual['Archivo']}** (Patente: {doc_actual['Patente']})")
-                            mostrar_visor_pdf(drive_service, doc_actual["ID_Drive"], height=350)
-                            st.divider()
-
-                with col_datos:
-                    st.warning("⚠️ Edición manual deshabilitada.")
-                    st.write("Al seleccionar múltiples documentos, los datos se guardarán exactamente como los extrajo la IA. Si necesitas corregir un dato, selecciona ese documento individualmente en la lista.")
-
             else:
                 with col_visor:
-                    st.write("👈 Haz clic en cualquier documento de la lista para auditarlo.")
+                    st.info("👈 Selecciona un documento de la lista.")
 
     # ==========================================
     # PESTAÑA 2: DUPLICADOS
@@ -229,81 +201,73 @@ def modulo_auditar(drive_service, sheets_client, TIPO_DOC, SHEET_ID):
         if not lista_duplicados:
             st.info("No se detectaron conflictos de patentes.")
         else:
-            df_mostrar_dup = pd.DataFrame(lista_duplicados)[["Patente", "Archivo", "Titular", "Chasis"]]
-            st.write("Haz clic en una fila para resolver el conflicto.")
+            col_lista_dup, col_resolucion = st.columns([1.5, 3.5])
             
-            evento_seleccion_dup = st.dataframe(
-                df_mostrar_dup,
-                on_select="rerun",
-                selection_mode="single-row",
-                use_container_width=True,
-                hide_index=True
-            )
-            
-            indices_dup = evento_seleccion_dup.selection.rows
-            
-            if len(indices_dup) == 1:
-                doc_nuevo = lista_duplicados[indices_dup[0]]
-                patente_conflicto = doc_nuevo["Patente"]
-                
-                fila_excel_vieja, datos_excel_viejos = patentes_existentes[patente_conflicto]
-                id_drive_viejo = datos_excel_viejos.get('ID_DRIVE')
-                
-                st.markdown("---")
-                st.subheader(f"⚖️ Resolución de Conflicto: Dominio {patente_conflicto}")
-                
-                c_pdf_viejo, c_data_vieja, c_data_nueva, c_pdf_nuevo = st.columns(4)
-                
-                with c_pdf_viejo:
-                    st.caption("📄 PDF Anterior")
-                    if id_drive_viejo:
-                        mostrar_visor_pdf(drive_service, id_drive_viejo, height=450)
-                    else:
-                        st.error("Archivo anterior no encontrado.")
-                
-                with c_data_vieja:
-                    st.caption("🗄️ Datos Guardados")
-                    st.info(f"""
-                    **Titular:** {datos_excel_viejos.get('TITULAR', '')}  
-                    **Chasis:** {datos_excel_viejos.get('NRO_CHASIS', '')}  
-                    **Motor:** {datos_excel_viejos.get('NRO_MOTOR', '')}  
-                    """)
-                    
-                with c_data_nueva:
-                    st.caption("🆕 Nuevos Datos")
-                    datos_ia = doc_nuevo["Data_Raw"]
-                    st.success(f"""
-                    **Titular:** {datos_ia.get('titular', '')}  
-                    **Chasis:** {datos_ia.get('nro_chasis', '')}  
-                    **Motor:** {datos_ia.get('nro_motor', '')}  
-                    """)
-                    
-                with c_pdf_nuevo:
-                    st.caption("📄 PDF Nuevo")
-                    mostrar_visor_pdf(drive_service, doc_nuevo["ID_Drive"], height=450)
-                
-                st.markdown("<br>", unsafe_allow_html=True)
-                col_btn1, col_btn2, col_blank = st.columns([2, 2, 4])
-                
-                with col_btn1:
-                    if st.button("🔄 Reemplazar Documento Anterior", type="primary", use_container_width=True):
-                        with st.spinner("Ejecutando reemplazo..."):
-                            if id_drive_viejo:
-                                try:
-                                    enviar_a_papelera(drive_service, id_drive_viejo)
-                                except:
-                                    pass 
-                            
-                            fila_nueva = preparar_fila_excel(doc_nuevo["ID_Drive"], doc_nuevo["Archivo"], datos_ia, "Reemplazado")
-                            rango = f"A{fila_excel_vieja}:O{fila_excel_vieja}"
-                            hoja.update(values=[fila_nueva], range_name=rango)
-                            mover_archivo_aprobados(drive_service, doc_nuevo["ID_Drive"], id_origen, id_destino)
-                            
-                        st.success("Reemplazo exitoso.")
-                        st.rerun()
+            with col_lista_dup:
+                st.subheader("Conflictos Detectados")
+                with st.container(height=500):
+                    for idx, doc in enumerate(lista_duplicados):
+                        texto_fila = f"⚠️ {doc['Patente']} | {doc['Titular'][:15]}"
+                        tipo_boton = "primary" if st.session_state.indice_dup_seleccionado == idx else "secondary"
                         
-                with col_btn2:
-                    if st.button("🗑️ Descartar Documento Nuevo", use_container_width=True):
-                        enviar_a_papelera(drive_service, doc_nuevo["ID_Drive"])
-                        st.warning("Documento nuevo descartado.")
-                        st.rerun()
+                        if st.button(texto_fila, key=f"btn_dup_{idx}", use_container_width=True, type=tipo_boton):
+                            st.session_state.indice_dup_seleccionado = idx
+                            st.rerun()
+
+            if st.session_state.indice_dup_seleccionado is not None and st.session_state.indice_dup_seleccionado < len(lista_duplicados):
+                with col_resolucion:
+                    doc_nuevo = lista_duplicados[st.session_state.indice_dup_seleccionado]
+                    patente_conflicto = doc_nuevo["Patente"]
+                    
+                    fila_excel_vieja, datos_excel_viejos = patentes_existentes[patente_conflicto]
+                    id_drive_viejo = datos_excel_viejos.get('ID_DRIVE')
+                    
+                    st.subheader(f"⚖️ Resolución: Dominio {patente_conflicto}")
+                    
+                    c_pdf_viejo, c_data_vieja, c_data_nueva, c_pdf_nuevo = st.columns(4)
+                    
+                    with c_pdf_viejo:
+                        st.caption("📄 PDF Anterior")
+                        if id_drive_viejo:
+                            mostrar_visor_pdf(drive_service, id_drive_viejo, height=400)
+                        else:
+                            st.error("No hallado.")
+                    
+                    with c_data_vieja:
+                        st.caption("🗄️ Datos Guardados")
+                        st.info(f"**Titular:** {datos_excel_viejos.get('TITULAR', '')}\n\n**Chasis:** {datos_excel_viejos.get('NRO_CHASIS', '')}")
+                        
+                    with c_data_nueva:
+                        st.caption("🆕 Nuevos Datos")
+                        datos_ia = doc_nuevo["Data_Raw"]
+                        st.success(f"**Titular:** {datos_ia.get('titular', '')}\n\n**Chasis:** {datos_ia.get('nro_chasis', '')}")
+                        
+                    with c_pdf_nuevo:
+                        st.caption("📄 PDF Nuevo")
+                        mostrar_visor_pdf(drive_service, doc_nuevo["ID_Drive"], height=400)
+                    
+                    col_btn1, col_btn2 = st.columns(2)
+                    with col_btn1:
+                        if st.button("🔄 Reemplazar Documento Anterior", type="primary", use_container_width=True):
+                            with st.spinner("Reemplazando..."):
+                                if id_drive_viejo:
+                                    try:
+                                        enviar_a_papelera(drive_service, id_drive_viejo)
+                                    except:
+                                        pass 
+                                
+                                fila_nueva = preparar_fila_excel(doc_nuevo["ID_Drive"], doc_nuevo["Archivo"], datos_ia, "Reemplazado")
+                                rango = f"A{fila_excel_vieja}:O{fila_excel_vieja}"
+                                hoja.update(values=[fila_nueva], range_name=rango)
+                                mover_archivo_aprobados(drive_service, doc_nuevo["ID_Drive"], id_origen, id_destino)
+                                
+                            st.session_state.indice_dup_seleccionado = None
+                            st.success("Reemplazo exitoso.")
+                            st.rerun()
+                            
+                    with col_btn2:
+                        if st.button("🗑️ Descartar Documento Nuevo", use_container_width=True):
+                            enviar_a_papelera(drive_service, doc_nuevo["ID_Drive"])
+                            st.session_state.indice_dup_seleccionado = None
+                            st.warning("Documento nuevo descartado.")
+                            st.rerun()
