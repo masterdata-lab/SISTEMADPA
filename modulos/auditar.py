@@ -1,9 +1,6 @@
 import streamlit as st
 import pandas as pd
-import base64
-import io
 from datetime import datetime
-from googleapiclient.http import MediaIoBaseDownload
 
 # --- FUNCIONES AUXILIARES ---
 
@@ -16,37 +13,13 @@ def obtener_datos_sheets(sheets_client, SHEET_ID):
         st.error(f"Error al conectar con Google Sheets: {e}")
         return None, []
 
-def mostrar_visor_pdf(drive_service, file_id, height=600):
-    """Muestra el PDF y añade un botón de descarga por si el navegador bloquea la previsualización."""
-    try:
-        request = drive_service.files().get_media(fileId=file_id)
-        fh = io.BytesIO()
-        downloader = MediaIoBaseDownload(fh, request)
-        done = False
-        while done is False:
-            _, done = downloader.next_chunk()
-        
-        pdf_bytes = fh.getvalue()
-        base64_pdf = base64.b64encode(pdf_bytes).decode('utf-8')
-        
-        # Botón de descarga de emergencia por bloqueos de Chrome
-        st.download_button(
-            label="📥 Descargar PDF (Si el visor no carga)",
-            data=pdf_bytes,
-            file_name=f"documento_{file_id}.pdf",
-            mime="application/pdf",
-            use_container_width=True
-        )
-
-        pdf_display = f'''
-            <embed src="data:application/pdf;base64,{base64_pdf}" 
-                   width="100%" 
-                   height="{height}" 
-                   type="application/pdf">
-        '''
-        st.markdown(pdf_display, unsafe_allow_html=True)
-    except Exception as e:
-        st.error(f"Error al cargar PDF: {e}")
+def mostrar_visor_pdf(file_id, height=600):
+    """Muestra el PDF utilizando el visor nativo de Google Drive mediante iframe."""
+    url_preview = f"https://drive.google.com/file/d/{file_id}/preview"
+    st.markdown(
+        f'<iframe src="{url_preview}" width="100%" height="{height}px" style="border: none; border-radius: 8px;"></iframe>', 
+        unsafe_allow_html=True
+    )
 
 def mover_archivo_aprobados(drive_service, file_id, id_origen, id_destino):
     drive_service.files().update(
@@ -131,13 +104,13 @@ def modulo_auditar(drive_service, sheets_client, TIPO_DOC, SHEET_ID):
         if not lista_nuevos:
             st.info("No hay documentos nuevos.")
         else:
-            col_lista, col_visor, col_datos = st.columns([1.5, 2, 1.5])
+            col_lista, col_visor, col_datos = st.columns([2, 2, 1.5])
             
             with col_lista:
                 st.subheader("Lista de Documentos")
-                st.caption("💡 Haz clic sobre cualquier fila para auditar el documento.")
+                st.info("💡 Haz clic sobre cualquier fila para auditar el documento.")
                 
-                with st.container(height=500):
+                with st.container(height=550):
                     cabecera = st.columns([1, 2, 2])
                     cabecera[0].markdown("**Patente**")
                     cabecera[1].markdown("**Archivo**")
@@ -145,7 +118,7 @@ def modulo_auditar(drive_service, sheets_client, TIPO_DOC, SHEET_ID):
                     st.divider()
                     
                     for idx, doc in enumerate(lista_nuevos):
-                        texto_fila = f"🔑 {doc['Patente']}  |  📄 {doc['Archivo'][:15]}...  |  👤 {doc['Titular'][:12]}"
+                        texto_fila = f"🔑 {doc['Patente']}  |  📄 {doc['Archivo'][:20]}...  |  👤 {doc['Titular'][:15]}"
                         tipo_boton = "primary" if st.session_state.indice_seleccionado == idx else "secondary"
                         
                         if st.button(texto_fila, key=f"btn_doc_{idx}", use_container_width=True, type=tipo_boton):
@@ -159,7 +132,7 @@ def modulo_auditar(drive_service, sheets_client, TIPO_DOC, SHEET_ID):
                 
                 with col_visor:
                     st.subheader(f"📄 {doc_actual['Archivo']}")
-                    mostrar_visor_pdf(drive_service, doc_actual["ID_Drive"])
+                    mostrar_visor_pdf(doc_actual["ID_Drive"])
                 
                 with col_datos:
                     st.subheader("Datos para Auditar")
@@ -205,7 +178,7 @@ def modulo_auditar(drive_service, sheets_client, TIPO_DOC, SHEET_ID):
             
             with col_lista_dup:
                 st.subheader("Conflictos Detectados")
-                with st.container(height=500):
+                with st.container(height=550):
                     for idx, doc in enumerate(lista_duplicados):
                         texto_fila = f"⚠️ {doc['Patente']} | {doc['Titular'][:15]}"
                         tipo_boton = "primary" if st.session_state.indice_dup_seleccionado == idx else "secondary"
@@ -229,7 +202,7 @@ def modulo_auditar(drive_service, sheets_client, TIPO_DOC, SHEET_ID):
                     with c_pdf_viejo:
                         st.caption("📄 PDF Anterior")
                         if id_drive_viejo:
-                            mostrar_visor_pdf(drive_service, id_drive_viejo, height=400)
+                            mostrar_visor_pdf(id_drive_viejo, height=450)
                         else:
                             st.error("No hallado.")
                     
@@ -244,9 +217,11 @@ def modulo_auditar(drive_service, sheets_client, TIPO_DOC, SHEET_ID):
                         
                     with c_pdf_nuevo:
                         st.caption("📄 PDF Nuevo")
-                        mostrar_visor_pdf(drive_service, doc_nuevo["ID_Drive"], height=400)
+                        mostrar_visor_pdf(doc_nuevo["ID_Drive"], height=450)
                     
+                    st.markdown("<br>", unsafe_allow_html=True)
                     col_btn1, col_btn2 = st.columns(2)
+                    
                     with col_btn1:
                         if st.button("🔄 Reemplazar Documento Anterior", type="primary", use_container_width=True):
                             with st.spinner("Reemplazando..."):
