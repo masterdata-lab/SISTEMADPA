@@ -13,7 +13,7 @@ def obtener_datos_sheets(sheets_client, SHEET_ID):
         st.error(f"Error al conectar con Google Sheets: {e}")
         return []
 
-def mostrar_visor_pdf(file_id, height=700):
+def mostrar_visor_pdf(file_id, height=600):
     url_preview = f"https://drive.google.com/file/d/{file_id}/preview"
     st.markdown(
         f'<iframe src="{url_preview}" width="100%" height="{height}px" style="border: none; border-radius: 8px;"></iframe>', 
@@ -67,31 +67,31 @@ def modulo_buscar(drive_service, sheets_client, SHEET_ID):
             
             id_drive = registro_encontrado.get('ID_DRIVE')
             
-            # Layout de resultados: 40% info / 60% visor
-            col_info, col_visor = st.columns([2, 3])
+            # Replicamos el layout de auditoría: Visor [4] a la izquierda, Datos [3] a la derecha
+            col_visor, col_datos = st.columns([4, 3])
             
-            with col_info:
+            with col_visor:
+                st.subheader("Vista Previa")
+                if id_drive:
+                    mostrar_visor_pdf(id_drive)
+                else:
+                    st.error("El registro no tiene un documento asociado para visualizar.")
+
+            with col_datos:
                 st.subheader("Datos del Vehículo")
                 
-                # --- NUEVO DISEÑO EN CUADROS PARA LOS DATOS ---
+                # Usamos un contenedor con borde para simular el aspecto de un "form", 
+                # pero con st.text_input deshabilitados para evitar edición.
                 with st.container(border=True):
-                    st.markdown(f"**👤 Titular:** {registro_encontrado.get('TITULAR', 'N/A')}")
-                    st.divider()
-                    
-                    # Fila 1: Marca y Modelo
-                    c1, c2 = st.columns(2)
-                    c1.metric(label="Marca", value=registro_encontrado.get('MARCA', 'N/A'))
-                    c2.metric(label="Modelo", value=registro_encontrado.get('MODELO', 'N/A'))
-                    
-                    # Fila 2: Chasis y Motor
-                    c3, c4 = st.columns(2)
-                    c3.metric(label="Chasis", value=registro_encontrado.get('NRO_CHASIS', 'N/A'))
-                    c4.metric(label="Motor", value=registro_encontrado.get('NRO_MOTOR', 'N/A'))
-                    
-                    st.divider()
-                    st.markdown(f"**📍 Radicación:** {registro_encontrado.get('LUGAR_RADICACION', 'N/A')}")
-                # ----------------------------------------------
+                    st.text_input("Patente", value=patente_input, disabled=True)
+                    st.text_input("Marca", value=registro_encontrado.get('MARCA', ''), disabled=True)
+                    st.text_input("Modelo", value=registro_encontrado.get('MODELO', ''), disabled=True)
+                    st.text_input("Chasis", value=registro_encontrado.get('NRO_CHASIS', ''), disabled=True)
+                    st.text_input("Motor", value=registro_encontrado.get('NRO_MOTOR', ''), disabled=True)
+                    st.text_input("Titular", value=registro_encontrado.get('TITULAR', ''), disabled=True)
+                    st.text_input("Radicación", value=registro_encontrado.get('LUGAR_RADICACION', ''), disabled=True)
                 
+                st.divider()
                 st.subheader("Acciones Rápidas")
                 
                 if id_drive:
@@ -123,16 +123,6 @@ def modulo_buscar(drive_service, sheets_client, SHEET_ID):
                         """, 
                         unsafe_allow_html=True
                     )
-                    
-                    # Acción 3: Imprimir (Nativo)
-                    st.caption("🖨️ *Para imprimir, utiliza el ícono de la impresora en la esquina superior derecha del visor del PDF.*")
-                else:
-                    st.error("El registro no tiene un ID de archivo asociado válido.")
-
-            with col_visor:
-                st.subheader("Vista Previa")
-                if id_drive:
-                    mostrar_visor_pdf(id_drive)
                 
         else:
             st.warning(f"Ocurrió un error al cargar los datos de: **{patente_input}**")
