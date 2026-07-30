@@ -12,7 +12,7 @@ TIPO_DOC = "Cédulas"
 icono = "💳"
 CARPETA_RAIZ_ID = "1ps5FF0fkJ7utOpvbqPWfAs9IAOH6aoNU" 
 # TODO: Necesitarás crear un nuevo Google Sheet (o una pestaña nueva) para Cédulas
-SHEET_ID = "PEGAR_AQUI_EL_NUEVO_SHEET_ID" 
+SHEET_ID = "1_ncJgZrP5Jvks3nE-tBVrMmuSA7pbZiEmH9ExvHD_Uk" 
 
 st.set_page_config(page_title=f"Gestión de {TIPO_DOC}", page_icon=icono, layout="wide")
 
