@@ -191,7 +191,15 @@ def modulo_auditar(drive_service, sheets_client, TIPO_DOC, SHEET_ID):
                     st.subheader("Auditoría")
                     with st.form("form_nuevo"):
                         pat_input = st.text_input("Patentes (separadas por coma)", value=", ".join(doc["Patentes_Lista"]))
-                        cara_input = st.selectbox("Tipo", ["FRENTE", "DORSO"], index=0 if doc["Tipo_Cara"]=="FRENTE" else 1)
+                        
+                        # --- CORRECCIÓN AQUÍ: Agregamos todas las opciones posibles ---
+                        opciones_cara = ["FRENTE", "DORSO", "FRENTE_Y_DORSO", "DESCONOCIDO"]
+                        # Buscamos el índice de la opción que trajo la IA. Si es raro, ponemos FRENTE por defecto (0)
+                        idx_cara = opciones_cara.index(doc["Tipo_Cara"]) if doc["Tipo_Cara"] in opciones_cara else 0
+                        
+                        cara_input = st.selectbox("Tipo de Cara", opciones_cara, index=idx_cara)
+                        # ---------------------------------------------------------------
+                        
                         if st.form_submit_button("✅ Aprobar e Insertar", type="primary", use_container_width=True):
                             nuevas_patentes = [p.strip().upper() for p in pat_input.split(',')] if pat_input.strip() else []
                             filas = preparar_filas_excel_cedulas(doc["ID_Drive"], doc["Archivo"], nuevas_patentes, cara_input)
