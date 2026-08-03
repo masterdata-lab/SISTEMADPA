@@ -104,7 +104,6 @@ def modulo_auditar(drive_service, sheets_client, TIPO_DOC, SHEET_ID):
         if not lista_nuevos:
             st.info("No hay documentos nuevos.")
         else:
-            # Aquí está la corrección de proporciones solicitada: 2 para lista, 4 para visor, 3 para datos
             col_lista, col_visor, col_datos = st.columns([2, 4, 3])
             
             with col_lista:
@@ -126,7 +125,6 @@ def modulo_auditar(drive_service, sheets_client, TIPO_DOC, SHEET_ID):
                             st.session_state.indice_seleccionado = idx
                             st.rerun()
 
-            # --- VALIDAR SI HAY UNA FILA SELECCIONADA ---
             if st.session_state.indice_seleccionado is not None and st.session_state.indice_seleccionado < len(lista_nuevos):
                 doc_actual = lista_nuevos[st.session_state.indice_seleccionado]
                 datos_ia = doc_actual["Data_Raw"] 
@@ -209,12 +207,26 @@ def modulo_auditar(drive_service, sheets_client, TIPO_DOC, SHEET_ID):
                     
                     with c_data_vieja:
                         st.caption("🗄️ Datos Guardados")
-                        st.info(f"**Titular:** {datos_excel_viejos.get('TITULAR', '')}\n\n**Chasis:** {datos_excel_viejos.get('NRO_CHASIS', '')}")
+                        st.info(
+                            f"**Patente:** {datos_excel_viejos.get('PATENTE', '')}\n\n"
+                            f"**Marca:** {datos_excel_viejos.get('MARCA', '')}\n\n"
+                            f"**Modelo:** {datos_excel_viejos.get('MODELO', '')}\n\n"
+                            f"**Chasis:** {datos_excel_viejos.get('NRO_CHASIS', '')}\n\n"
+                            f"**Motor:** {datos_excel_viejos.get('NRO_MOTOR', '')}\n\n"
+                            f"**Titular:** {datos_excel_viejos.get('TITULAR', '')}"
+                        )
                         
                     with c_data_nueva:
                         st.caption("🆕 Nuevos Datos")
                         datos_ia = doc_nuevo["Data_Raw"]
-                        st.success(f"**Titular:** {datos_ia.get('titular', '')}\n\n**Chasis:** {datos_ia.get('nro_chasis', '')}")
+                        st.success(
+                            f"**Patente:** {datos_ia.get('patente', '')}\n\n"
+                            f"**Marca:** {datos_ia.get('marca', '')}\n\n"
+                            f"**Modelo:** {datos_ia.get('modelo', '')}\n\n"
+                            f"**Chasis:** {datos_ia.get('nro_chasis', '')}\n\n"
+                            f"**Motor:** {datos_ia.get('nro_motor', '')}\n\n"
+                            f"**Titular:** {datos_ia.get('titular', '')}"
+                        )
                         
                     with c_pdf_nuevo:
                         st.caption("📄 PDF Nuevo")
