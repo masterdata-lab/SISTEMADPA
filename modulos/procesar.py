@@ -1,22 +1,21 @@
 import streamlit as st
 import io
 import json
-from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
+from googleapiclient.http import MediaIoBaseDownload
 from google import genai
 from google.genai import types
-from pypdf import PdfReader, PdfWriter
 
 def procesar_con_ia_y_reintentos(pdf_bytes, status_text_ui, nombre_archivo):
     try:
         api_key = st.secrets["GEMINI_API_KEY"]
         client = genai.Client(api_key=api_key)
-        modelo_principal = st.secrets.get("MODELO_IA_PRINCIPAL", "gemini-3.1-flash-lite")
-        modelo_secundario = st.secrets.get("MODELO_IA_SECUNDARIO", "gemini-3.5-flash")
+        modelo_principal = st.secrets.get("MODELO_IA_PRINCIPAL", "gemini-2.5-pro")
+        modelo_secundario = st.secrets.get("MODELO_IA_SECUNDARIO", "gemini-2.5-flash")
     except KeyError:
         raise Exception("Falta la variable GEMINI_API_KEY en los secretos de Streamlit.")
 
     prompt = """Eres un asistente experto en auditoría documental automotor en Argentina. 
-    Analiza el documento PDF adjunto y extrae la información requerida.
+    Analiza el documento PDF adjunto (que puede tener varias páginas) y extrae la información requerida.
     
     REGLAS ESTRICTAS:
     1. Determina si el documento es un 'TÍTULO DEL AUTOMOTOR'. Si no lo es, 'es_titulo_valido' debe ser false y el resto null.
@@ -52,7 +51,7 @@ def procesar_con_ia_y_reintentos(pdf_bytes, status_text_ui, nombre_archivo):
     )
 
     try:
-        status_text_ui.info(f"🔄 `{nombre_archivo}`: Consultando modelo principal ({modelo_principal})...")
+        status_text_ui.info(f"🔄 `{nombre_archivo}`: Consultando IA...")
         respuesta = client.models.generate_content(
             model=modelo_principal,
             contents=[prompt, documento_pdf],
@@ -61,7 +60,7 @@ def procesar_con_ia_y_reintentos(pdf_bytes, status_text_ui, nombre_archivo):
         return json.loads(respuesta.text)
     
     except Exception as error_principal:
-        status_text_ui.warning(f"⚠️ `{nombre_archivo}`: Falló modelo principal. Ejecutando failover a {modelo_secundario}...")
+        status_text_ui.warning(f"⚠️ `{nombre_archivo}`: Falló modelo principal. Ejecutando failover...")
         try:
             respuesta_failover = client.models.generate_content(
                 model=modelo_secundario,
@@ -70,7 +69,7 @@ def procesar_con_ia_y_reintentos(pdf_bytes, status_text_ui, nombre_archivo):
             )
             return json.loads(respuesta_failover.text)
         except Exception as error_failover:
-            raise Exception(f"TIMEOUT_GLOBAL: Ambos modelos se encuentran saturados o devolvieron error. Intente más tarde. Detalles: {error_failover}")
+            raise Exception(f"TIMEOUT_GLOBAL: Ambos modelos fallaron. Detalles: {error_failover}")
 
 def mover_archivo_drive(drive_service, file_id, id_origen, id_destino, datos_extraidos):
     propiedades_app = {}
@@ -88,29 +87,6 @@ def mover_archivo_drive(drive_service, file_id, id_origen, id_destino, datos_ext
         body={"appProperties": propiedades_app},
         fields='id, parents'
     ).execute(num_retries=3)
-
-def crear_nuevo_archivo_drive(drive_service, nombre, id_destino, pdf_bytes, datos_extraidos):
-    """Crea un archivo nuevo directamente en la carpeta destino."""
-    propiedades_app = {}
-    for clave, valor in datos_extraidos.items():
-        if valor is not None:
-            valor_str = str(valor)
-            if len(valor_str) > 100:
-                valor_str = valor_str[:100]
-            propiedades_app[clave] = valor_str
-            
-    file_metadata = {
-        'name': nombre,
-        'parents': [id_destino],
-        'appProperties': propiedades_app
-    }
-    media = MediaIoBaseUpload(io.BytesIO(pdf_bytes), mimetype='application/pdf', resumable=True)
-    archivo_creado = drive_service.files().create(
-        body=file_metadata,
-        media_body=media,
-        fields='id'
-    ).execute(num_retries=3)
-    return archivo_creado['id']
 
 def revertir_archivo_drive(drive_service, file_id, id_actual, id_original):
     drive_service.files().update(
@@ -156,15 +132,10 @@ def modulo_procesar(drive_service, TIPO_DOC):
         
         if acciones:
             barra_rollback = st.progress(0)
-            # Revertimos en orden inverso para asegurar la consistencia
             for i, accion in enumerate(reversed(acciones)):
                 try:
                     if accion["tipo"] == "move":
                         revertir_archivo_drive(drive_service, accion["file_id"], accion["destino"], accion["origen"])
-                    elif accion["tipo"] == "create":
-                        drive_service.files().delete(fileId=accion["file_id"]).execute(num_retries=3)
-                    elif accion["tipo"] == "trash":
-                        drive_service.files().update(fileId=accion["file_id"], body={'trashed': False}).execute(num_retries=3)
                 except Exception:
                     pass
                 barra_rollback.progress((i + 1) / len(acciones))
@@ -217,64 +188,16 @@ def modulo_procesar(drive_service, TIPO_DOC):
                     status, done = downloader.next_chunk()
                 
                 pdf_bytes = fh.getvalue()
-                lector = PdfReader(io.BytesIO(pdf_bytes))
-                num_paginas = len(lector.pages)
 
-                if num_paginas == 1:
-                    # Flujo estándar: 1 archivo = 1 página
-                    datos_json = procesar_con_ia_y_reintentos(pdf_bytes, status_text_ui, archivo['name'])
-                    st.session_state.acciones_rollback.append({"tipo": "move", "file_id": archivo['id'], "origen": id_origen, "destino": id_destino})
-                    mover_archivo_drive(drive_service, archivo['id'], id_origen, id_destino, datos_json)
-                    archivos_exitosos += 1
-
-                else:
-                    # Flujo multipágina: Extraer y analizar solo la primera página
-                    status_text_ui.info(f"📄 `{archivo['name']}` tiene {num_paginas} páginas. Validando contenido...")
-                    
-                    escritor_p1 = PdfWriter()
-                    escritor_p1.add_page(lector.pages[0])
-                    bytes_p1 = io.BytesIO()
-                    escritor_p1.write(bytes_p1)
-                    pdf_p1 = bytes_p1.getvalue()
-                    
-                    datos_json_p1 = procesar_con_ia_y_reintentos(pdf_p1, status_text_ui, f"{archivo['name']} (Pág 1)")
-                    
-                    if not datos_json_p1.get("es_titulo_valido", False):
-                        # Era una póliza de 1000 páginas u otro documento inválido. Mover entero sin dividir.
-                        status_text_ui.warning(f"⚠️ `{archivo['name']}` no es un lote de Títulos. Moviendo completo sin dividir.")
-                        st.session_state.acciones_rollback.append({"tipo": "move", "file_id": archivo['id'], "origen": id_origen, "destino": id_destino})
-                        mover_archivo_drive(drive_service, archivo['id'], id_origen, id_destino, datos_json_p1)
-                        archivos_exitosos += 1
-                    else:
-                        # Es un lote de Títulos. Proceder a dividir.
-                        status_text_ui.success(f"✂️ Lote confirmado. Dividiendo `{archivo['name']}` en {num_paginas} archivos independientes...")
-                        
-                        for p in range(num_paginas):
-                            if st.session_state.detener_proceso:
-                                break # Respetar interrupción a la mitad del lote
-                                
-                            nombre_split = f"{archivo['name'].replace('.pdf', '')}_Pag_{p+1}.pdf"
-                            
-                            escritor = PdfWriter()
-                            escritor.add_page(lector.pages[p])
-                            b = io.BytesIO()
-                            escritor.write(b)
-                            pagina_bytes = b.getvalue()
-                            
-                            # Reutilizar resultado de la pág 1 para ahorrar API, procesar el resto
-                            datos_pagina = datos_json_p1 if p == 0 else procesar_con_ia_y_reintentos(pagina_bytes, status_text_ui, nombre_split)
-                            
-                            nuevo_id = crear_nuevo_archivo_drive(drive_service, nombre_split, id_destino, pagina_bytes, datos_pagina)
-                            st.session_state.acciones_rollback.append({"tipo": "create", "file_id": nuevo_id})
-                            archivos_exitosos += 1
-                        
-                        if not st.session_state.detener_proceso:
-                            # Enviar el documento original gigante a la papelera (se recupera en rollback)
-                            drive_service.files().update(fileId=archivo['id'], body={'trashed': True}).execute(num_retries=3)
-                            st.session_state.acciones_rollback.append({"tipo": "trash", "file_id": archivo['id']})
+                # 2. Procesar el documento completo (sin recortar)
+                datos_json = procesar_con_ia_y_reintentos(pdf_bytes, status_text_ui, archivo['name'])
+                
+                # 3. Mover a carpeta de auditoría de forma íntegra
+                st.session_state.acciones_rollback.append({"tipo": "move", "file_id": archivo['id'], "origen": id_origen, "destino": id_destino})
+                mover_archivo_drive(drive_service, archivo['id'], id_origen, id_destino, datos_json)
+                archivos_exitosos += 1
 
             except Exception as e:
-                # Si un archivo falla, lo dejamos en pendientes y continuamos con el siguiente
                 archivos_fallidos += 1
                 lista_errores.append(f"**{archivo['name']}**: {e}")
                 
@@ -290,7 +213,7 @@ def modulo_procesar(drive_service, TIPO_DOC):
         
         st.markdown("---")
         st.subheader("📊 Resumen del Procesamiento")
-        st.success(f"✅ Archivos/Páginas procesadas exitosamente: **{archivos_exitosos}**")
+        st.success(f"✅ Archivos procesados exitosamente: **{archivos_exitosos}**")
         
         if archivos_fallidos > 0:
             st.error(f"❌ Fallidos (Siguen en pendientes): **{archivos_fallidos}**")
