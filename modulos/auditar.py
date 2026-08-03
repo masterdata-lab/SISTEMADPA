@@ -173,13 +173,15 @@ def modulo_auditar(drive_service, sheets_client, TIPO_DOC, SHEET_ID):
         if not lista_duplicados:
             st.info("No se detectaron conflictos de patentes.")
         else:
-            col_lista_dup, col_resolucion = st.columns([1.5, 3.5])
+            # Aquí cambiamos la proporción para darle el máximo ancho a la comparativa
+            col_lista_dup, col_resolucion = st.columns([1, 5])
             
             with col_lista_dup:
-                st.subheader("Conflictos Detectados")
+                st.subheader("Conflictos")
                 with st.container(height=550):
                     for idx, doc in enumerate(lista_duplicados):
-                        texto_fila = f"⚠️ {doc['Patente']} | {doc['Titular'][:15]}"
+                        # Redujimos el texto a lo más básico
+                        texto_fila = f"⚠️ {doc['Patente']}"
                         tipo_boton = "primary" if st.session_state.indice_dup_seleccionado == idx else "secondary"
                         
                         if st.button(texto_fila, key=f"btn_dup_{idx}", use_container_width=True, type=tipo_boton):
