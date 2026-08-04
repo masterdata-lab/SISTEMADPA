@@ -42,13 +42,11 @@ def unificar_pdfs_en_drive(drive_service, id_frente, id_dorso, id_destino, nombr
     
     escritor = PdfWriter()
     
-    # Agregamos las páginas del Frente
     if bytes_frente:
         lector_f = PdfReader(io.BytesIO(bytes_frente))
         for page in lector_f.pages:
             escritor.add_page(page)
             
-    # Agregamos las páginas del Dorso
     if bytes_dorso:
         lector_d = PdfReader(io.BytesIO(bytes_dorso))
         for page in lector_d.pages:
@@ -58,16 +56,21 @@ def unificar_pdfs_en_drive(drive_service, id_frente, id_dorso, id_destino, nombr
     escritor.write(b)
     pdf_unificado = b.getvalue()
     
-    # Subir el archivo nuevo unificado
     file_metadata = {'name': nombre_final, 'parents': [id_destino]}
     media = MediaIoBaseUpload(io.BytesIO(pdf_unificado), mimetype='application/pdf', resumable=True)
     archivo_creado = drive_service.files().create(body=file_metadata, media_body=media, fields='id').execute(num_retries=3)
     
     return archivo_creado['id']
 
-def mover_archivo_aprobados(drive_service, file_id, id_origen, id_destino):
+def mover_y_renombrar_archivo(drive_service, file_id, id_origen, id_destino, nuevo_nombre):
+    """Mueve el archivo de carpeta y lo renombra en Drive."""
+    file_metadata = {'name': nuevo_nombre}
     drive_service.files().update(
-        fileId=file_id, addParents=id_destino, removeParents=id_origen, fields='id, parents'
+        fileId=file_id, 
+        addParents=id_destino, 
+        removeParents=id_origen, 
+        body=file_metadata,
+        fields='id, parents, name'
     ).execute(num_retries=3)
 
 def enviar_a_papelera(drive_service, file_id):
@@ -133,18 +136,15 @@ def modulo_auditar(drive_service, sheets_client, TIPO_DOC, SHEET_ID):
             "Tipo_Cara": tipo_cara
         }
         
-        # Categorización Inteligente: Nuevo vs Unificación vs Conflicto
         categoria = "NUEVO"
         for p in patentes_lista:
             if p in patentes_existentes and p != "SIN PATENTE":
                 cara_existente = str(patentes_existentes[p][1].get('TIPO_CARA', '')).upper()
                 
-                # Si las caras son IGUALES o ya está unificada, es un CONFLICTO (Duplicado)
                 if tipo_cara == cara_existente or cara_existente == "FRENTE_Y_DORSO" or tipo_cara == "DESCONOCIDO":
                     categoria = "CONFLICTO"
-                    break # Un solo conflicto manda todo el archivo a la pestaña duplicados
+                    break 
                 
-                # Si las caras son OPUESTAS, es una UNIFICACIÓN
                 elif (tipo_cara == "FRENTE" and cara_existente == "DORSO") or (tipo_cara == "DORSO" and cara_existente == "FRENTE"):
                     if categoria != "CONFLICTO":
                         categoria = "UNIFICACION"
@@ -156,7 +156,6 @@ def modulo_auditar(drive_service, sheets_client, TIPO_DOC, SHEET_ID):
         else:
             lista_nuevos.append(doc_data)
 
-    # CREACIÓN DE 3 PESTAÑAS
     tab_nuevos, tab_unif, tab_dup = st.tabs([
         f"🟢 Nuevos ({len(lista_nuevos)})", 
         f"🔵 Para Unificar ({len(lista_unificaciones)})", 
@@ -192,19 +191,20 @@ def modulo_auditar(drive_service, sheets_client, TIPO_DOC, SHEET_ID):
                     with st.form("form_nuevo"):
                         pat_input = st.text_input("Patentes (separadas por coma)", value=", ".join(doc["Patentes_Lista"]))
                         
-                        # --- CORRECCIÓN AQUÍ: Agregamos todas las opciones posibles ---
                         opciones_cara = ["FRENTE", "DORSO", "FRENTE_Y_DORSO", "DESCONOCIDO"]
-                        # Buscamos el índice de la opción que trajo la IA. Si es raro, ponemos FRENTE por defecto (0)
                         idx_cara = opciones_cara.index(doc["Tipo_Cara"]) if doc["Tipo_Cara"] in opciones_cara else 0
-                        
                         cara_input = st.selectbox("Tipo de Cara", opciones_cara, index=idx_cara)
-                        # ---------------------------------------------------------------
                         
                         if st.form_submit_button("✅ Aprobar e Insertar", type="primary", use_container_width=True):
                             nuevas_patentes = [p.strip().upper() for p in pat_input.split(',')] if pat_input.strip() else []
-                            filas = preparar_filas_excel_cedulas(doc["ID_Drive"], doc["Archivo"], nuevas_patentes, cara_input)
+                            
+                            # Lógica de renombrado
+                            patente_principal = nuevas_patentes[0] if nuevas_patentes else "SIN_PATENTE"
+                            nombre_final = f"{patente_principal} - CEDULA {cara_input}.pdf"
+                            
+                            filas = preparar_filas_excel_cedulas(doc["ID_Drive"], nombre_final, nuevas_patentes, cara_input)
                             hoja.append_rows(filas)
-                            mover_archivo_aprobados(drive_service, doc["ID_Drive"], id_origen, id_destino)
+                            mover_y_renombrar_archivo(drive_service, doc["ID_Drive"], id_origen, id_destino, nombre_final)
                             st.session_state.idx_ced_nuevo = None
                             st.rerun()
                         if st.form_submit_button("🗑️ Descartar", use_container_width=True):
@@ -219,7 +219,7 @@ def modulo_auditar(drive_service, sheets_client, TIPO_DOC, SHEET_ID):
         if not lista_unificaciones:
             st.info("No se encontraron complementos para unificar.")
         else:
-            col_lista_u, col_res_u = st.columns([1, 5]) # Formato Wide
+            col_lista_u, col_res_u = st.columns([1, 5])
             with col_lista_u:
                 st.subheader("Complementos")
                 with st.container(height=550):
@@ -258,10 +258,10 @@ def modulo_auditar(drive_service, sheets_client, TIPO_DOC, SHEET_ID):
                                 id_frente = id_guardado if cara_guardada == "FRENTE" else doc["ID_Drive"]
                                 id_dorso = doc["ID_Drive"] if cara_guardada == "FRENTE" else id_guardado
                                 
-                                nombre_unificado = f"Cedula_Unificada_{patente_principal}.pdf"
+                                # Renombrado alfabético
+                                nombre_unificado = f"{patente_principal} - CEDULA FRENTE Y DORSO.pdf"
                                 nuevo_id = unificar_pdfs_en_drive(drive_service, id_frente, id_dorso, id_destino, nombre_unificado)
                                 
-                                # Actualizar la base de datos
                                 fecha_hoy = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
                                 for p in doc["Patentes_Lista"]:
                                     if p in patentes_existentes:
@@ -269,10 +269,8 @@ def modulo_auditar(drive_service, sheets_client, TIPO_DOC, SHEET_ID):
                                         fila_act = [nuevo_id, nombre_unificado, p, "FRENTE_Y_DORSO", "Aprobado", fecha_hoy]
                                         hoja.update(values=[fila_act], range_name=f"A{f_bd}:F{f_bd}")
                                     else:
-                                        # Si había otra patente en la hoja que no estaba en BD, la agregamos
                                         hoja.append_row([nuevo_id, nombre_unificado, p, "FRENTE_Y_DORSO", "Aprobado", fecha_hoy])
                                 
-                                # Enviar archivos originales fragmentados a la papelera
                                 try: enviar_a_papelera(drive_service, id_guardado)
                                 except: pass
                                 try: enviar_a_papelera(drive_service, doc["ID_Drive"])
@@ -295,7 +293,7 @@ def modulo_auditar(drive_service, sheets_client, TIPO_DOC, SHEET_ID):
         if not lista_duplicados:
             st.info("No se detectaron conflictos.")
         else:
-            col_lista_d, col_res_d = st.columns([1, 5]) # Formato Wide Replicado
+            col_lista_d, col_res_d = st.columns([1, 5])
             with col_lista_d:
                 st.subheader("Conflictos")
                 with st.container(height=550):
@@ -333,10 +331,11 @@ def modulo_auditar(drive_service, sheets_client, TIPO_DOC, SHEET_ID):
                                     try: enviar_a_papelera(drive_service, id_viejo)
                                     except: pass
                                 
+                                nombre_final = f"{patente_principal} - CEDULA {doc['Tipo_Cara']}.pdf"
                                 fecha_hoy = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
-                                fila_act = [doc["ID_Drive"], doc["Archivo"], patente_principal, doc["Tipo_Cara"], "Reemplazado", fecha_hoy]
+                                fila_act = [doc["ID_Drive"], nombre_final, patente_principal, doc["Tipo_Cara"], "Reemplazado", fecha_hoy]
                                 hoja.update(values=[fila_act], range_name=f"A{fila_bd}:F{fila_bd}")
-                                mover_archivo_aprobados(drive_service, doc["ID_Drive"], id_origen, id_destino)
+                                mover_y_renombrar_archivo(drive_service, doc["ID_Drive"], id_origen, id_destino, nombre_final)
                                 
                             st.session_state.idx_ced_dup = None
                             st.rerun()
