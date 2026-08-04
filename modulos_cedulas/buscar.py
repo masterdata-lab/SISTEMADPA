@@ -6,7 +6,6 @@ from googleapiclient.http import MediaIoBaseDownload
 # --- FUNCIONES AUXILIARES ---
 
 def obtener_hoja_y_datos_cedulas(sheets_client, SHEET_ID):
-    """Devuelve el objeto de la hoja 'Cedulas' y los registros."""
     try:
         hoja = sheets_client.open_by_key(SHEET_ID).worksheet("Cedulas")
         registros = hoja.get_all_records()
@@ -35,27 +34,47 @@ def descargar_pdf_bytes(drive_service, file_id):
         st.error(f"Error al descargar archivo desde Drive: {e}")
         return None
 
+def hacer_enlace_publico(drive_service, file_id):
+    try:
+        permiso = {'type': 'anyone', 'role': 'reader'}
+        drive_service.permissions().create(fileId=file_id, body=permiso).execute()
+        return True
+    except Exception as e:
+        st.error(f"Error al cambiar permisos: {e}")
+        return False
+
+def enviar_documento_por_email(drive_service, file_id, email_destino, mensaje):
+    try:
+        permiso = {'type': 'user', 'role': 'reader', 'emailAddress': email_destino}
+        drive_service.permissions().create(
+            fileId=file_id,
+            body=permiso,
+            emailMessage=mensaje,
+            sendNotificationEmail=True
+        ).execute()
+        return True
+    except Exception as e:
+        st.error(f"Error al enviar el correo: {e}")
+        return False
+
 # --- MÓDULO PRINCIPAL ---
 
 def modulo_buscar(drive_service, sheets_client, SHEET_ID):
     st.header("🔍 Buscar y Visualizar Cédulas")
     st.divider()
 
-    # 1. Cargamos la base de datos de Cédulas
     with st.spinner("Cargando base de datos..."):
         hoja, registros_bd = obtener_hoja_y_datos_cedulas(sheets_client, SHEET_ID)
         
     if hoja is None:
         return
 
-    # Extraemos solo las patentes válidas para el buscador (ignorando "SIN PATENTE" o vacíos)
     lista_patentes = sorted(list(set([
         str(reg.get('PATENTE', '')).strip().upper() 
         for reg in registros_bd 
         if reg.get('PATENTE') and str(reg.get('PATENTE')).strip().upper() != "SIN PATENTE"
     ])))
 
-    # 2. Barra de búsqueda
     col_busqueda, col_vacia = st.columns([1, 2])
     with col_busqueda:
         patente_input = st.selectbox(
@@ -65,10 +84,7 @@ def modulo_buscar(drive_service, sheets_client, SHEET_ID):
             placeholder="Ej. AG871VL"
         )
 
-    # 3. Mostrar resultados
     if patente_input:
-        # A diferencia de Títulos, aquí buscamos TODOS los registros que coincidan con la patente
-        # (ya que podría haber un archivo para el Frente y otro para el Dorso)
         registros_encontrados = [reg for reg in registros_bd if str(reg.get('PATENTE', '')).strip().upper() == patente_input]
         
         st.success(f"✅ Se encontraron **{len(registros_encontrados)}** registro(s) para la patente: **{patente_input}**")
@@ -102,9 +118,31 @@ def modulo_buscar(drive_service, sheets_client, SHEET_ID):
                             st.download_button(
                                 label=f"📥 Descargar {tipo_cara}",
                                 data=pdf_bytes,
-                                file_name=f"Cedula_{patente_input}_{tipo_cara}.pdf",
+                                file_name=f"{patente_input} - CEDULA {tipo_cara}.pdf",
                                 mime="application/pdf",
                                 use_container_width=True,
-                                type="primary",
                                 key=f"btn_dl_{idx}"
                             )
+                            
+                        st.markdown("<br>", unsafe_allow_html=True)
+                        st.markdown("**Opciones de Compartir**")
+                        c_link, c_mail = st.columns(2)
+                        
+                        with c_link:
+                            if st.button("🌐 Enlace Público", use_container_width=True, key=f"btn_link_{idx}"):
+                                with st.spinner("Desbloqueando..."):
+                                    if hacer_enlace_publico(drive_service, id_drive):
+                                        st.success("¡Activado!")
+                                        st.code(f"https://drive.google.com/file/d/{id_drive}/view", language="text")
+                                        
+                        with c_mail:
+                            with st.form(f"form_mail_ced_{idx}"):
+                                correo = st.text_input("Destinatario:", key=f"email_input_{idx}")
+                                msg = st.text_area("Mensaje:", value=f"Cédula {tipo_cara} - Patente {patente_input}", key=f"msg_input_{idx}")
+                                if st.form_submit_button("📤 Enviar", use_container_width=True, type="primary"):
+                                    if not correo:
+                                        st.warning("Ingresa un correo.")
+                                    else:
+                                        with st.spinner("Enviando..."):
+                                            if enviar_documento_por_email(drive_service, id_drive, correo, msg):
+                                                st.success("¡Enviado!")
