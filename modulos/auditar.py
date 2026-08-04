@@ -21,9 +21,15 @@ def mostrar_visor_pdf(file_id, height=600):
         unsafe_allow_html=True
     )
 
-def mover_archivo_aprobados(drive_service, file_id, id_origen, id_destino):
+def mover_y_renombrar_archivo(drive_service, file_id, id_origen, id_destino, nuevo_nombre):
+    """Mueve el archivo de carpeta y lo renombra en Drive."""
+    file_metadata = {'name': nuevo_nombre}
     drive_service.files().update(
-        fileId=file_id, addParents=id_destino, removeParents=id_origen, fields='id, parents'
+        fileId=file_id, 
+        addParents=id_destino, 
+        removeParents=id_origen, 
+        body=file_metadata,
+        fields='id, parents, name'
     ).execute(num_retries=3)
 
 def enviar_a_papelera(drive_service, file_id):
@@ -149,9 +155,14 @@ def modulo_auditar(drive_service, sheets_client, TIPO_DOC, SHEET_ID):
                         if btn_aprobar:
                             datos_corregidos = datos_ia.copy()
                             datos_corregidos.update({'patente': pat, 'marca': mar, 'modelo': mod, 'nro_chasis': cha, 'nro_motor': mot, 'titular': tit})
-                            fila = preparar_fila_excel(doc_actual["ID_Drive"], doc_actual["Archivo"], datos_corregidos)
+                            
+                            # Logica de renombrado
+                            pat_final = str(pat).upper().strip() if pat else "SIN_PATENTE"
+                            nombre_final = f"{pat_final} - TITULO.pdf"
+                            
+                            fila = preparar_fila_excel(doc_actual["ID_Drive"], nombre_final, datos_corregidos)
                             hoja.append_row(fila)
-                            mover_archivo_aprobados(drive_service, doc_actual["ID_Drive"], id_origen, id_destino)
+                            mover_y_renombrar_archivo(drive_service, doc_actual["ID_Drive"], id_origen, id_destino, nombre_final)
                             
                             st.session_state.indice_seleccionado = None
                             st.success("Aprobado exitosamente.")
@@ -173,14 +184,12 @@ def modulo_auditar(drive_service, sheets_client, TIPO_DOC, SHEET_ID):
         if not lista_duplicados:
             st.info("No se detectaron conflictos de patentes.")
         else:
-            # Aquí cambiamos la proporción para darle el máximo ancho a la comparativa
             col_lista_dup, col_resolucion = st.columns([1, 5])
             
             with col_lista_dup:
                 st.subheader("Conflictos")
                 with st.container(height=550):
                     for idx, doc in enumerate(lista_duplicados):
-                        # Redujimos el texto a lo más básico
                         texto_fila = f"⚠️ {doc['Patente']}"
                         tipo_boton = "primary" if st.session_state.indice_dup_seleccionado == idx else "secondary"
                         
@@ -246,10 +255,13 @@ def modulo_auditar(drive_service, sheets_client, TIPO_DOC, SHEET_ID):
                                     except:
                                         pass 
                                 
-                                fila_nueva = preparar_fila_excel(doc_nuevo["ID_Drive"], doc_nuevo["Archivo"], datos_ia, "Reemplazado")
+                                pat_final = str(datos_ia.get('patente', patente_conflicto)).upper().strip()
+                                nombre_final = f"{pat_final} - TITULO.pdf"
+                                
+                                fila_nueva = preparar_fila_excel(doc_nuevo["ID_Drive"], nombre_final, datos_ia, "Reemplazado")
                                 rango = f"A{fila_excel_vieja}:O{fila_excel_vieja}"
                                 hoja.update(values=[fila_nueva], range_name=rango)
-                                mover_archivo_aprobados(drive_service, doc_nuevo["ID_Drive"], id_origen, id_destino)
+                                mover_y_renombrar_archivo(drive_service, doc_nuevo["ID_Drive"], id_origen, id_destino, nombre_final)
                                 
                             st.session_state.indice_dup_seleccionado = None
                             st.success("Reemplazo exitoso.")
